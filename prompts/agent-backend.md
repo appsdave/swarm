@@ -61,4 +61,5 @@ SET project:status done
 - Always keep your session alive; never voluntarily exit
 - Poll every 60 seconds when blocked; do not poll faster
 - **Publish the DB schema as early as possible** — don't wait until you're fully done
+- Improve the project's file structure when it helps: keep related code grouped by feature, avoid cluttering top-level folders, and place new files where another developer would expect to find them
 - Write clean, production-quality code

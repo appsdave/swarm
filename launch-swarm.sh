@@ -2,6 +2,59 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+LOG_DIR="$REPO_ROOT/.swarm-logs"
+mkdir -p "$LOG_DIR"
+
+PID_BACKEND=""
+PID_FRONTEND=""
+MONITOR_PID=""
+
+cleanup() {
+  for pid in "$PID_FRONTEND" "$PID_BACKEND" "$MONITOR_PID"; do
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+trap cleanup EXIT INT TERM
+
+redis_get() {
+  local key="$1"
+  if [[ "$SWARM_REDIS_URL" == rediss://* ]]; then
+    redis-cli -u "$SWARM_REDIS_URL" --tls GET "$key" 2>/dev/null || true
+  else
+    redis-cli -u "$SWARM_REDIS_URL" GET "$key" 2>/dev/null || true
+  fi
+}
+
+redis_del() {
+  if [[ "$SWARM_REDIS_URL" == rediss://* ]]; then
+    redis-cli -u "$SWARM_REDIS_URL" --tls DEL "$@" >/dev/null 2>&1 || true
+  else
+    redis-cli -u "$SWARM_REDIS_URL" DEL "$@" >/dev/null 2>&1 || true
+  fi
+}
+
+wait_for_swarm_done() {
+  while true; do
+    local backend_status frontend_status
+    backend_status="$(redis_get agent:backend:status | tr -d '\r')"
+    frontend_status="$(redis_get agent:frontend:status | tr -d '\r')"
+
+    if [ "$backend_status" = "done" ] && [ "$frontend_status" = "done" ]; then
+      echo "🧠 Redis confirms both agents are done. Stopping lingering Junie processes..."
+      for pid in "$PID_FRONTEND" "$PID_BACKEND"; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      done
+      return 0
+    fi
+
+    sleep 5
+  done
+}
 
 # Verify worktrees exist
 if [ ! -d "$REPO_ROOT/worktree-frontend" ] || [ ! -d "$REPO_ROOT/worktree-backend" ]; then
@@ -18,21 +71,38 @@ fi
 
 echo "🚀 Launching Agent Swarm..."
 echo "   Redis: $SWARM_REDIS_URL"
+echo "   Logs:  $LOG_DIR"
 echo ""
+
+echo "🧹 Clearing stale swarm Redis state..."
+redis_del \
+  agent:frontend:status \
+  agent:frontend:task \
+  agent:frontend:last_poll \
+  blocked:frontend \
+  agent:backend:status \
+  agent:backend:task \
+  agent:backend:last_poll \
+  blocked:backend \
+  schema:frontend \
+  schema:backend \
+  project:status
 
 # Launch Agent B (Backend) — starts first so schema is published early
 echo "🔧 Starting Agent B (Backend)..."
 cd "$REPO_ROOT/worktree-backend"
-junie --headless --system-prompt "$REPO_ROOT/prompts/agent-backend.md" . &
+junie --task "$(<"$REPO_ROOT/prompts/agent-backend.md")" --project . >"$LOG_DIR/agent-backend.log" 2>&1 &
 PID_BACKEND=$!
 echo "   PID: $PID_BACKEND"
+echo "   Log: $LOG_DIR/agent-backend.log"
 
 # Launch Agent A (Frontend)
 echo "🎨 Starting Agent A (Frontend)..."
 cd "$REPO_ROOT/worktree-frontend"
-junie --headless --system-prompt "$REPO_ROOT/prompts/agent-frontend.md" . &
+junie --task "$(<"$REPO_ROOT/prompts/agent-frontend.md")" --project . >"$LOG_DIR/agent-frontend.log" 2>&1 &
 PID_FRONTEND=$!
 echo "   PID: $PID_FRONTEND"
+echo "   Log: $LOG_DIR/agent-frontend.log"
 
 echo ""
 echo "✅ Swarm launched!"
@@ -40,8 +110,15 @@ echo "   Agent A (Frontend) PID: $PID_FRONTEND"
 echo "   Agent B (Backend)  PID: $PID_BACKEND"
 echo ""
 echo "Monitor with: redis-cli -u \$SWARM_REDIS_URL MGET agent:frontend:status agent:backend:status"
+echo "Verify coordination with: redis-cli -u \$SWARM_REDIS_URL MGET blocked:frontend blocked:backend schema:backend schema:frontend"
 echo "Stop with:    kill $PID_FRONTEND $PID_BACKEND"
 
+wait_for_swarm_done &
+MONITOR_PID=$!
+
 # Wait for both agents
-wait $PID_BACKEND $PID_FRONTEND
+wait $PID_BACKEND $PID_FRONTEND || true
+if [ -n "$MONITOR_PID" ] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+  kill "$MONITOR_PID" 2>/dev/null || true
+fi
 echo "🏁 All agents finished."

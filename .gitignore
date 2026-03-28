@@ -1,0 +1,9 @@
+.swarm-logs/
+.env
+.junie/
+worktree-frontend/
+worktree-frontend-*/
+worktree-backend/
+worktree-backend-*/
+tui/runtime-prompts/
+tui/target/

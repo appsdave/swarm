@@ -57,4 +57,5 @@ SET agent:frontend:task "Frontend complete"
 - Commit frequently to the `agent/frontend` branch
 - Always keep your session alive; never voluntarily exit
 - Poll every 60 seconds when blocked; do not poll faster
+- Improve the project's file structure when it helps: keep related code grouped by feature, avoid cluttering top-level folders, and place new files where another developer would expect to find them
 - Write clean, production-quality code
