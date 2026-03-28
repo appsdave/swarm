@@ -872,7 +872,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             Constraint::Length(10),
             Constraint::Min(10),
             Constraint::Length(task_input_height),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ])
         .split(f.area());
 
@@ -1015,26 +1015,48 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let launch_msg = if !app.launched {
-        "Type a one-off swarm task in the input box, then press [Enter] to launch or relaunch"
+    let dim = Style::default().fg(Color::DarkGray);
+    let key_style = Style::default().fg(Color::Yellow);
+    let info_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+
+    // Line 1: contextual launch/status message
+    let status_line = if !app.launched {
+        Line::from(vec![
+            Span::styled(" Enter a task above and press ", dim),
+            Span::styled("[Enter]", key_style),
+            Span::styled(" to launch the swarm", dim),
+        ])
     } else {
-        "Swarm running; after exit, edit the task box and press [Enter] for the next swarm"
+        Line::from(vec![
+            Span::styled(" Swarm running — edit the task and press ", dim),
+            Span::styled("[Enter]", key_style),
+            Span::styled(" after agents exit to relaunch", dim),
+        ])
     };
 
-    let redis = app
-        .redis_error
-        .as_deref()
-        .map(|e| format!(" | redis: {e}"))
-        .unwrap_or_default();
-    let text = format!(
-        " {launch_msg} | [q] Quit | [Backspace] edit | logs reset + Redis state cleared on each new run | junie: {}{}",
-        app.junie_path,
-        redis
-    );
+    // Line 2: keybindings + run behaviour
+    let keys_line = Line::from(vec![
+        Span::styled(" ", dim),
+        Span::styled("[q]", key_style),
+        Span::styled(" Quit  ", dim),
+        Span::styled("[Backspace]", key_style),
+        Span::styled(" Edit task  ", dim),
+        Span::styled("·", dim),
+        Span::styled("  Logs & Redis state reset on each new run", dim),
+    ]);
 
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::DarkGray))
-        .wrap(Wrap { trim: true });
+    // Line 3: system info (junie path + optional redis error)
+    let mut info_spans = vec![
+        Span::styled(" junie: ", dim),
+        Span::styled(app.junie_path.as_str(), info_style),
+    ];
+    if let Some(err) = app.redis_error.as_deref() {
+        info_spans.push(Span::styled("  ·  redis: ", dim));
+        info_spans.push(Span::styled(err.to_string(), Style::default().fg(Color::Red)));
+    }
+    let info_line = Line::from(info_spans);
+
+    let paragraph = Paragraph::new(vec![status_line, keys_line, info_line]);
     f.render_widget(paragraph, area);
 }
 
