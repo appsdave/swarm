@@ -68,6 +68,32 @@ SET agent:backend:task "Schema published, continuing backend logic"
 ```
 This is your **highest-priority deliverable** — other agents depend on it.
 
+### Direct Messaging
+
+You can send messages directly to the frontend agent and receive messages from it via Redis message queues.
+
+**To send a message to the frontend agent:**
+```
+LPUSH msg:frontend "backend|<your message text>"
+```
+
+**To read messages sent to you:**
+```
+LRANGE msg:backend 0 -1
+```
+After reading, clear your inbox:
+```
+DEL msg:backend
+```
+
+**Use messages for:**
+- Asking questions: `LPUSH msg:frontend "backend|What component names are you using for the dashboard?"`
+- Sharing updates: `LPUSH msg:frontend "backend|I changed the auth endpoint to /api/v2/auth"`
+- Coordinating work: `LPUSH msg:frontend "backend|Please hold off on the user API calls, I am refactoring the schema"`
+- Answering questions: check `LRANGE msg:backend 0 -1` each poll cycle and respond via `LPUSH msg:frontend`
+
+**Every poll cycle**, check your message inbox and respond to any pending messages before continuing your work.
+
 ### Negotiation Protocol
 
 Every poll cycle, check what the other agent needs from you:
