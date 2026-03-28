@@ -873,7 +873,6 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .constraints([
             Constraint::Length(10),
             Constraint::Min(10),
-            Constraint::Length(12),
             Constraint::Length(task_input_height),
             Constraint::Length(3),
         ])
@@ -1041,18 +1040,11 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
     } else if total_wrapped_lines > inner_height {
         // If cursor is in view from top, keep it there; otherwise scroll to end
         0
-    // Calculate scroll offset so the cursor (end of text) is always visible.
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let scroll_offset = if inner_width > 0 && inner_height > 0 {
-        let total_lines = (prompt.len() + inner_width - 1) / inner_width;
-        total_lines.saturating_sub(inner_height) as u16
     } else {
         0
     };
 
     let paragraph = Paragraph::new(display_text)
-    let paragraph = Paragraph::new(prompt)
         .style(style)
         .block(
             Block::default()
@@ -1092,9 +1084,9 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let launch_msg = if !app.launched {
-        "Type a one-off swarm task in the input box, then press [Enter] to launch or relaunch"
+        "[Enter] Launch"
     } else {
-        "Swarm running; after exit, edit the task box and press [Enter] for the next swarm"
+        "[Enter] Relaunch after exit"
     };
 
     let redis = app
@@ -1103,8 +1095,7 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .map(|e| format!(" | redis: {e}"))
         .unwrap_or_default();
     let text = format!(
-        " {launch_msg} | [q] Quit | [Backspace] edit | logs reset + Redis state cleared on each new run | junie: {}{}",
-        app.junie_path,
+        " {launch_msg} | [q] Quit | [Backspace] Edit | Logs & Redis reset each run{}",
         redis
     );
 
