@@ -1,179 +1,289 @@
 # Ambition — Autonomous Agent Swarm
 
-This repository bootstraps a small autonomous swarm that coordinates through Render Redis and isolated Git worktrees. It currently ships with two worktrees and two prompt files:
-
-- `worktree-backend` on branch `agent/backend`
-- `worktree-frontend` on branch `agent/frontend`
-
-The same Redis blackboard protocol also works for suffixed agent IDs such as `backend-1` or `frontend-2`; just keep the key names consistent inside the prompt you launch.
-
 ## Architecture
 
-The workflow combines four pieces:
+This project implements a self-polling, multi-agent swarm using:
 
-- **Junie CLI (headless)** — runs each agent without interactive input
-- **Render Redis (`SWARM_REDIS_URL`)** — shared blackboard for coordination, status, and hand-offs
-- **Git worktrees** — separate branches/directories so agents do not overwrite each other
-- **Prompt files** — define each agent's identity, responsibilities, and Redis protocol
+- **Junie CLI** — Concurrent agents running with a non-interactive `--task` prompt
+- **Render Redis (swarm-brain)** — Cloud-hosted Key-Value store acting as the shared "Blackboard"
+- **Render MCP & Terminal Tools** — Protocols for agents to read/write the blackboard
+- **Git Worktrees** — Isolated branches/folders so agents never overwrite each other
 
-## Repository Layout
+## Redis Key Conventions
 
-| Path | Purpose |
+| Key Pattern | Type | Description |
+|---|---|---|
+| `agent:<id>:status` | string | Agent lifecycle state: `running`, `blocked`, `done`, `error` |
+| `agent:<id>:task` | string | Current task description |
+| `agent:<id>:last_poll` | string | ISO-8601 timestamp of last poll |
+| `schema:backend` | string (JSON) | Published backend DB schema |
+| `schema:frontend` | string (JSON) | Published frontend component schema |
+| `blocked:<agent>` | string | What the agent is waiting for, e.g. `schema:backend` |
+| `request:<agent>:needs` | string | What the agent currently needs from others (free text or JSON) |
+| `request:<agent>:offers` | string | What the agent can provide or has published |
+| `project:status` | string | Overall project state: `in_progress`, `integrating`, `done` |
+| `messages:<from>:<to>` | list | Message queue between agents |
+
+## Polling & Negotiation Protocol
+
+1. Agent checks its own `agent:<id>:status` key on startup, sets to `running`.
+2. Agent publishes `request:<id>:offers` (what it can provide) and `request:<id>:needs` (what it needs from others).
+3. Agent checks `request:<other>:needs` — if it can fulfill a request, it prioritizes publishing that data immediately.
+4. When blocked, agent sets `agent:<id>:status` → `blocked` and `blocked:<id>` → the key it needs.
+5. Agent enters polling loop: `sleep 15` → check Redis for the needed key → also check `request:<other>:needs` and fulfill if possible → repeat.
+6. When the needed data appears, agent sets status back to `running`, cleans up `blocked:<id>` and `request:<id>:needs`.
+7. On completion, agent sets `agent:<id>:status` → `done`.
+
+## Setup Guide
+
+### Step 1 — Redis Instance (Already Created)
+
+Your `swarm-brain` instance is live:
+
+| Field | Value |
 |---|---|
-| `README.md` | Setup, launch, and Redis coordination guide |
-| `setup-worktrees.sh` | Creates the frontend/backend worktrees and branches |
-| `launch-swarm.sh` | Starts the backend agent first, then the frontend agent |
-| `prompts/agent-backend.md` | Backend agent system prompt |
-| `prompts/agent-frontend.md` | Frontend agent system prompt |
+| **Service ID** | `red-d73vnn9aae7s73b8e8b0` |
+| **Region** | Ohio |
+| **Plan** | Standard (1 GB RAM, 1000 connections) |
+| **Runtime** | Valkey 8.1.4 |
+| **Internal URL** | `redis://red-d73vnn9aae7s73b8e8b0:6379` |
 
-## Prerequisites
+#### Enable External Access
 
-Before launching the swarm, make sure you have:
+By default, external traffic is blocked. To connect from your local machine:
 
-- Git with `worktree` support
-- Junie CLI installed and authenticated
-- A Render Redis / Key Value instance
-- `redis-cli` available locally if you want to inspect keys manually
-- `SWARM_REDIS_URL` exported in your shell (or loaded from a local `.env` file)
+1. Go to [swarm-brain dashboard](https://dashboard.render.com) → **swarm-brain** → **Info** page.
+2. Scroll to **Networking → Inbound IP Restrictions**.
+3. Add `0.0.0.0/0` (allow all) for development, or your specific IP.
+4. Click **Save**.
+5. The **External Key Value URL** will now appear in the **Connections** section — copy it.
 
-Example:
+> **Security**: For production, restrict to your IP only. Find it with `curl ifconfig.me`.
 
-```bash
-export SWARM_REDIS_URL="rediss://default:<password>@<host>:6379"
-```
+### Step 2 — Install Prerequisites
 
-If you keep the value in `.env`, load it before launching:
+- **Git** — already installed if you cloned this repo.
+- **Junie CLI** — install and authenticate per JetBrains docs.
+- **redis-cli** (optional, for debugging) — `sudo apt install redis-tools` or `brew install redis`.
 
-```bash
-set -a
-source ./.env
-set +a
-```
+### Step 3 — Create Git Worktrees
 
-## Setup Workflow
-
-### 1. Create the agent worktrees
+From the project root:
 
 ```bash
 ./setup-worktrees.sh
 ```
 
-What the script does:
+This creates two folders:
+- `worktree-frontend/` → branch `agent/frontend`
+- `worktree-backend/` → branch `agent/backend`
 
-- Ensures the repository has at least one commit (required by `git worktree`)
-- Creates branch `agent/frontend` and directory `worktree-frontend`
-- Creates branch `agent/backend` and directory `worktree-backend`
-- Skips worktrees that already exist, so it is safe to re-run
+### Step 4 — Set the Redis Connection URL
 
-### 2. Review or adjust the prompts
-
-The shipped prompts use Redis agent IDs `frontend` and `backend`.
-
-If your orchestration layer uses IDs like `frontend-1` or `backend-1`, update the prompt files before launch so these values stay aligned everywhere:
-
-- `agent:<id>:status`
-- `agent:<id>:task`
-- `agent:<id>:last_poll`
-- `blocked:<id>`
-
-### 3. Launch the swarm
+Recommended once-per-machine command:
 
 ```bash
-./launch-swarm.sh
+swarm setup --redis-url "<paste your External Key Value URL here>"
 ```
 
-`launch-swarm.sh` performs the following checks and actions:
+That saves the value into `~/.swarm/env`, and the `swarm` wrapper auto-loads it for future commands.
 
-1. Confirms both worktrees exist
-2. Confirms `SWARM_REDIS_URL` is set
-3. Starts the backend agent first so it can publish `schema:backend` early
-4. Starts the frontend agent second
-5. Waits for both processes to finish
-
-## Manual Launch
-
-Use manual launch when you want to run only one agent, test a modified prompt, or attach different tooling around the swarm.
+If you only want it for the current shell session, you can still use:
 
 ```bash
-# Backend agent
+export SWARM_REDIS_URL="<paste your External Key Value URL here>"
+```
+
+The External URL will look like: `rediss://red-d73vnn9aae7s73b8e8b0:PASSWORD@ohio-valkey.render.com:6379`
+
+To make it permanent manually:
+
+```bash
+echo 'export SWARM_REDIS_URL="<your-external-url>"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Step 5 — Verify the Connection (Optional)
+
+```bash
+redis-cli -u "$SWARM_REDIS_URL" PING
+```
+
+You should see `PONG`. If you get a TLS error, try:
+
+```bash
+redis-cli -u "$SWARM_REDIS_URL" --tls PING
+```
+
+### Step 6 — Install the Global Launcher (Recommended)
+
+The new default install location is `~/.swarm`, so the toolchain is self-contained under your home directory.
+
+If you want a one-liner install from GitHub, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap-swarm.sh | bash -s -- https://github.com/<owner>/<repo>.git
+```
+
+That bootstrap command clones or updates the source into `~/.swarm/src/ambition`, installs the runtime into `~/.swarm`, makes sure `~/.swarm/bin` is added to `~/.bashrc` and `~/.zshrc`, and wires those shells to auto-load `~/.swarm/env`.
+
+If you already cloned the repo manually, you can still install directly with:
+
+```bash
+./install-swarm.sh
+source ~/.bashrc
+```
+
+If you do not want to reload your shell config, use:
+
+```bash
+export PATH="$HOME/.swarm/bin:$PATH"
+```
+
+This installs:
+
+- `swarm` → the primary global command that opens the TUI
+- `swarm-tui` → the compiled Rust TUI in `~/.swarm/bin`
+- `swarm-task` → a compatibility alias to the same wrapper
+- support scripts and prompt templates in `~/.swarm/share`
+- persisted environment config in `~/.swarm/env`
+- the source checkout under `~/.swarm/src/ambition` when you use the bootstrap installer
+
+If you want the `PATH` change to persist manually:
+
+```bash
+echo 'export PATH="$HOME/.swarm/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Step 7 — Prepare Any Project You Want To Swarm
+
+From the root of the project you want the agents to work on:
+
+```bash
+swarm setup
+```
+
+That creates `worktree-frontend/` and `worktree-backend/` inside the current project.
+
+You can also save your Redis URL during setup so you do not need a separate export step:
+
+```bash
+swarm setup --redis-url "rediss://<your External Key Value URL>"
+```
+
+### Step 8 — Launch the Swarm
+
+The easiest command is:
+
+```bash
+swarm
+```
+
+That opens the TUI for the current project. Type the task into the `Swarm Task Input` box and press `Enter`.
+
+If you want to pass the task from the command line instead, use:
+
+```bash
+swarm run "Update the documentation, README, and setup instructions"
+```
+
+That uses the wrapper so the task text after `run` is passed to the TUI/Junie launcher.
+
+If you prefer entering the task inside the UI instead of on the command line, just run:
+
+```bash
+swarm-tui
+```
+
+Then type the task into the `Swarm Task Input` box at the bottom of the screen and press `Enter`.
+
+You can also start the shell-based launcher instead:
+
+```bash
+swarm shell
+```
+
+Or run the shell launcher directly:
+
+```bash
+swarm-task shell
+```
+
+The shell launcher starts both agents concurrently and writes logs to `.swarm-logs/agent-frontend.log` and `.swarm-logs/agent-backend.log` in the current project.
+
+If you want to give the swarm a shared mission, pass it as a task prompt:
+
+```bash
+./tui/target/release/swarm-tui "Build the frontend and backend for the new dashboard flow"
+```
+
+Or set it via environment variable before launching the TUI:
+
+```bash
+export SWARM_TASK_PROMPT="Build the frontend and backend for the new dashboard flow"
+./tui/target/release/swarm-tui
+```
+
+The role-specific instructions for each agent are generated automatically in `.swarm/runtime-prompts/` by the TUI, and the shell launcher uses either the current project's `prompts/` directory or the installed templates in `~/.swarm/share/prompts/`.
+
+### Manual Launch (Alternative)
+
+```bash
+# Agent A — Frontend
+cd worktree-frontend
+junie --task "$(<../prompts/agent-frontend.md)" --project .
+
+# Agent B — Backend
 cd worktree-backend
-junie --headless --system-prompt ../prompts/agent-backend.md .
-
-# Frontend agent
-cd ../worktree-frontend
-junie --headless --system-prompt ../prompts/agent-frontend.md .
+junie --task "$(<../prompts/agent-backend.md)" --project .
 ```
 
-## Redis Blackboard Protocol
+### Where do I enter prompts?
 
-The swarm communicates through Redis keys with a shared naming scheme.
+- **Interactive in the TUI**: start `swarm` or `swarm-tui`, type your task directly in the `Swarm Task Input` box, then press `Enter`.
+- **Swarm-wide task via CLI**: pass it as positional CLI text, for example `swarm run "Build the dashboard"`, or set `SWARM_TASK_PROMPT`.
+- **Per-agent role/system prompt**: edit `prompts/agent-frontend.md` and `prompts/agent-backend.md` in the current project for the shell launcher, or let the TUI generate per-agent prompt files in `.swarm/runtime-prompts/`.
+- **Direct one-off Junie run**: use `junie --task "your prompt here" --project .` from the relevant worktree.
 
-| Key Pattern | Type | Description |
-|---|---|---|
-| `agent:<id>:status` | string | Agent lifecycle state: `running`, `blocked`, `done`, `error` |
-| `agent:<id>:task` | string | Human-readable description of the current task |
-| `agent:<id>:last_poll` | string | ISO-8601 timestamp of the last blocked poll |
-| `schema:backend` | string (JSON) | Backend schema or contract published for dependent agents |
-| `schema:frontend` | string (JSON) | Frontend schema, contract, or UI metadata |
-| `blocked:<id>` | string | Redis key that the blocked agent is waiting for |
-| `project:status` | string | Optional overall project status maintained by the orchestrator |
-| `messages:<from>:<to>` | list | Optional message queue between agents |
+Each TUI launch is a one-off swarm run. When the agents finish, the logs stay visible, the tracked PIDs are released, and you can type a brand-new task into the same input box and press `Enter` again for the next swarm.
 
-### Standard status lifecycle
+### How do I confirm the agents are actually communicating?
 
-1. Agent starts and sets `agent:<id>:status` to `running`
-2. Agent updates `agent:<id>:task` as work progresses
-3. If blocked, agent sets `agent:<id>:status` to `blocked` and writes `blocked:<id>`
-4. While blocked, the agent polls no faster than every 60 seconds
-5. When unblocked, the agent returns to `running`
-6. On completion, the agent sets only its own `agent:<id>:status` to `done`
+You now have `3` ways to confirm this:
 
-### Polling loop
+1. **Inside the TUI logs**
+   - The TUI now shows Redis-derived events such as:
+     - task updates
+     - `waiting on schema:backend`
+     - `unblocked in Redis`
+     - `Redis key schema:backend was published`
+   - This makes it much easier to see that coordination is happening and that it is not just one agent printing output.
 
-When an agent needs data from another agent:
+2. **From Redis directly**
 
-```text
-SET agent:<id>:status blocked
-SET blocked:<id> "<required-key>"
-SET agent:<id>:last_poll <iso-timestamp>
+   ```bash
+   redis-cli -u "$SWARM_REDIS_URL" MGET agent:frontend:status agent:backend:status blocked:frontend blocked:backend
+   redis-cli -u "$SWARM_REDIS_URL" MGET schema:backend schema:frontend
+   ```
 
-sleep 60
-GET <required-key>
+   If one agent is blocked and the other publishes a schema key, that is real swarm communication.
 
-# repeat until data exists
+3. **From the shell launcher logs**
+   - Check `.swarm-logs/agent-frontend.log`
+   - Check `.swarm-logs/agent-backend.log`
 
-SET agent:<id>:status running
-DEL blocked:<id>
-```
+### What happens when both agents are done?
 
-Do not poll faster than once per 60 seconds, and do not terminate the agent while it is waiting.
+- The TUI clears the previous swarm Redis keys before every new launch, watches fresh Redis status updates, and once every tracked agent reports `done`, it requests the Junie child processes to stop.
+- The shell launcher also clears stale Redis keys first, then monitors Redis and kills lingering agent PIDs once both `agent:frontend:status` and `agent:backend:status` are `done`.
+- This prevents finished Junie processes from sitting around and wasting RAM.
 
-## Monitoring and Debugging
+### Troubleshooting
 
-Check agent status and tasks:
-
-```bash
-redis-cli -u "$SWARM_REDIS_URL" MGET \
-  agent:backend:status agent:backend:task \
-  agent:frontend:status agent:frontend:task
-```
-
-Inspect published schemas:
-
-```bash
-redis-cli -u "$SWARM_REDIS_URL" GET schema:backend
-redis-cli -u "$SWARM_REDIS_URL" GET schema:frontend
-```
-
-Watch blocked agents:
-
-```bash
-redis-cli -u "$SWARM_REDIS_URL" KEYS 'blocked:*'
-```
-
-## Troubleshooting
-
-- **`SWARM_REDIS_URL` is missing** — export it first or load `.env` into your shell before running `launch-swarm.sh`
-- **Worktrees are missing** — run `./setup-worktrees.sh` again; it is idempotent for existing worktrees
-- **Agent IDs do not match Redis keys** — make sure the prompt file, monitoring commands, and any manual Redis commands all use the same `<id>`
-- **One agent finishes early** — that agent should only mark its own Redis status as `done`; do not mark the whole project complete unless your orchestrator owns that decision
+| Problem | Fix |
+|---|---|
+| `SWARM_REDIS_URL is not set` | Run `swarm setup --redis-url "rediss://<your External Key Value URL>"`, or export it manually |
+| `Could not connect to Redis` | Check the URL is the **External** one, not Internal |
+| TLS errors | Render free-tier Redis uses `rediss://` (TLS). Make sure your client supports it |
+| Worktree already exists | Delete with `git worktree remove worktree-frontend` then re-run setup |
