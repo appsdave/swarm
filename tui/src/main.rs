@@ -209,6 +209,8 @@ impl App {
         self.launched = false;
         self.shutdown_requested = false;
         self.completion_logged = false;
+        self.task_input.clear();
+        self.cursor_pos = 0;
 
         for agent in self.agents.values_mut() {
             agent.status = "⏳ idle".into();
@@ -1592,6 +1594,7 @@ async fn main() -> Result<()> {
                         KeyCode::Enter if !app.launched => {
                             let launch_task = app.current_task_prompt();
                             let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
+                            app.task_input.clear();
                             app.reset_for_next_run();
                             clear_swarm_redis_state(redis_url.as_deref(), &launch_specs, &tx).await;
                             while let Ok(ev) = rx.try_recv() {
