@@ -613,6 +613,31 @@ async fn spawn_agent(
     send_log(format!(">>> Launching {} in {} ...", junie_path.display(), spec.worktree.display()));
     send_log(format!(">>> Prompt file: {}", spec.prompt_path.display()));
 
+    // Pull latest changes in the worktree before starting the agent
+    {
+        let branch = format!("agent/{}", spec.role.as_str());
+        send_log(format!("🔄 Pulling latest changes for {}...", branch));
+        match Command::new("git")
+            .args(["pull", "--rebase", "origin", &branch])
+            .current_dir(&spec.worktree)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+        {
+            Ok(out) => {
+                let msg = String::from_utf8_lossy(&out.stdout);
+                let err = String::from_utf8_lossy(&out.stderr);
+                if out.status.success() {
+                    send_log(format!("✅ Pull done: {}", msg.trim()));
+                } else {
+                    send_log(format!("⚠️ Pull failed (non-fatal): {} {}", msg.trim(), err.trim()));
+                }
+            }
+            Err(e) => send_log(format!("⚠️ git pull failed (non-fatal): {e}")),
+        }
+    }
+
     let prompt = match fs::read_to_string(&spec.prompt_path) {
         Ok(prompt) => prompt,
         Err(e) => {
@@ -684,6 +709,72 @@ async fn spawn_agent(
             }
         }
     };
+
+    // --- Post-completion: auto commit, push, and create PR ---
+    {
+        let branch = format!("agent/{}", spec.role.as_str());
+        let label = spec.role.as_str().to_string();
+        let worktree = spec.worktree.clone();
+
+        // Look for post-agent-commit.sh relative to the project root
+        let project_root = worktree.parent().unwrap_or(&worktree);
+        let script = project_root.join("scripts/post-agent-commit.sh");
+
+        if script.exists() {
+            send_log(format!("📦 Running post-completion commit/push/PR for {}...", label));
+            match Command::new("bash")
+                .args([
+                    script.to_str().unwrap_or("scripts/post-agent-commit.sh"),
+                    worktree.to_str().unwrap_or("."),
+                    &branch,
+                    &label,
+                ])
+                .current_dir(&worktree)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(mut post_child) => {
+                    // Stream post-commit output to the TUI log pane
+                    if let Some(stdout) = post_child.stdout.take() {
+                        let tx3 = tx.clone();
+                        let aid = spec.id.clone();
+                        tokio::spawn(async move {
+                            let mut reader = BufReader::new(stdout).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                let _ = tx3.send(AppEvent::Log {
+                                    agent_id: aid.clone(),
+                                    line: sanitize_log_line(&line),
+                                });
+                            }
+                        });
+                    }
+                    if let Some(stderr) = post_child.stderr.take() {
+                        let tx3 = tx.clone();
+                        let aid = spec.id.clone();
+                        tokio::spawn(async move {
+                            let mut reader = BufReader::new(stderr).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                let _ = tx3.send(AppEvent::Log {
+                                    agent_id: aid.clone(),
+                                    line: format!("[post-commit] {}", sanitize_log_line(&line)),
+                                });
+                            }
+                        });
+                    }
+                    match post_child.wait().await {
+                        Ok(s) => send_log(format!("📦 Post-completion finished (exit {})", s.code().unwrap_or(-1))),
+                        Err(e) => send_log(format!("⚠️ Post-completion error: {e}")),
+                    }
+                }
+                Err(e) => {
+                    send_log(format!("⚠️ Failed to run post-commit script: {e}"));
+                }
+            }
+        } else {
+            send_log(format!("⚠️ Post-commit script not found at {}", script.display()));
+        }
+    }
 
     let _ = tx.send(AppEvent::AgentExited {
         agent_id: spec.id,
@@ -1064,7 +1155,79 @@ fn desired_agent_split(frontend_available: usize, backend_available: usize) -> (
     (frontend, backend)
 }
 
+fn ensure_worktrees_exist(project_root: &Path) -> Result<()> {
+    let frontend = discover_worktrees(project_root, AgentRole::Frontend)?;
+    let backend = discover_worktrees(project_root, AgentRole::Backend)?;
+    if !frontend.is_empty() && !backend.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("⚙️  No worktrees found — creating them automatically...");
+
+    // Prune stale worktree registrations (handles "missing but already registered" errors)
+    let _ = std::process::Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(project_root)
+        .status();
+
+    // Try setup-worktrees.sh from several locations
+    let candidates = [
+        project_root.join("setup-worktrees.sh"),
+        PathBuf::from(std::env::var("SWARM_HOME").unwrap_or_else(|_| {
+            format!("{}/.swarm", std::env::var("HOME").unwrap_or_default())
+        }))
+        .join("share/setup-worktrees.sh"),
+    ];
+
+    if let Some(script) = candidates.iter().find(|p| p.is_file()) {
+        let status = std::process::Command::new("bash")
+            .arg(script)
+            .current_dir(project_root)
+            .env("SWARM_PROJECT_ROOT", project_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("setup-worktrees.sh failed (exit {})", status.code().unwrap_or(-1));
+        }
+        return Ok(());
+    }
+
+    // Fallback: create worktrees inline if script not found
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(project_root)
+            .output()?
+            .stdout,
+    )?;
+    let head = head.trim();
+
+    for role in &["frontend", "backend"] {
+        let wt_dir = project_root.join(format!("worktree-{role}"));
+        if wt_dir.is_dir() {
+            continue;
+        }
+        let branch = format!("agent/{role}");
+        // Create branch if it doesn't exist
+        let _ = std::process::Command::new("git")
+            .args(["branch", &branch, head])
+            .current_dir(project_root)
+            .status();
+        let status = std::process::Command::new("git")
+            .args(["worktree", "add", "-f", wt_dir.to_str().unwrap_or("."), &branch])
+            .current_dir(project_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("Failed to create worktree for {role}");
+        }
+        eprintln!("   ✅ Created worktree-{role} (branch: {branch})");
+    }
+
+    Ok(())
+}
+
 fn build_agent_specs(project_root: &Path, task_prompt: Option<&str>) -> Result<Vec<AgentSpec>> {
+    ensure_worktrees_exist(project_root)?;
+
     let frontend_worktrees = discover_worktrees(project_root, AgentRole::Frontend)?;
     let backend_worktrees = discover_worktrees(project_root, AgentRole::Backend)?;
     let (frontend_count, backend_count) =

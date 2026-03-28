@@ -1,22 +1,14 @@
 {
-  "name": "ambition-frontend",
+  "name": "ambition",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Ambition frontend — React + Vite with feature-based file structure",
+  "description": "Ambition — Swarm TUI for orchestrating AI coding agents",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "react-router-dom": "^7.13.2"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^6.0.1",
-    "vite": "^8.0.3"
+    "build": "cd tui && cargo build --release",
+    "start": "cd tui && cargo run --release",
+    "dev": "cd tui && cargo run",
+    "launch": "bash launch-swarm.sh"
   },
   "engines": {
     "node": ">=20.0.0"
