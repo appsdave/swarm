@@ -2545,48 +2545,66 @@ async fn main() -> Result<()> {
             }
             "-u" | "--update" => {
                 println!("🔄 Updating swarm...");
-                // Stash any local changes so pull doesn't fail
-                let stash_status = std::process::Command::new("git")
-                    .args(["stash", "--include-untracked"])
-                    .current_dir(&project_root)
-                    .status()?;
-                let stashed = stash_status.success();
+                let swarm_dir = dirs_home().join(".swarm");
+                let repo_dir = swarm_dir.join("repo");
+                let repo_url = "https://github.com/appsdave/swarm.git";
 
-                let status = std::process::Command::new("git")
-                    .args(["pull", "--rebase", "origin", "main"])
-                    .current_dir(&project_root)
-                    .status()?;
-                if !status.success() {
-                    // Restore stash even on failure
-                    if stashed {
-                        let _ = std::process::Command::new("git")
-                            .args(["stash", "pop"])
-                            .current_dir(&project_root)
-                            .status();
+                // Clone or pull into ~/.swarm/repo
+                if repo_dir.join(".git").exists() {
+                    println!("📥 Pulling latest changes...");
+                    let status = std::process::Command::new("git")
+                        .args(["pull", "--rebase", "origin", "main"])
+                        .current_dir(&repo_dir)
+                        .status()?;
+                    if !status.success() {
+                        // If pull fails (diverged etc), nuke and re-clone
+                        println!("⚠️  Pull failed, re-cloning...");
+                        let _ = std::fs::remove_dir_all(&repo_dir);
+                        let status = std::process::Command::new("git")
+                            .args(["clone", "--depth", "1", "-b", "main", repo_url, repo_dir.to_str().unwrap_or(".")])
+                            .status()?;
+                        if !status.success() {
+                            anyhow::bail!("git clone failed");
+                        }
                     }
-                    anyhow::bail!("git pull failed");
+                } else {
+                    println!("📥 Cloning into ~/.swarm/repo...");
+                    std::fs::create_dir_all(&swarm_dir)?;
+                    let _ = std::fs::remove_dir_all(&repo_dir);
+                    let status = std::process::Command::new("git")
+                        .args(["clone", "--depth", "1", "-b", "main", repo_url, repo_dir.to_str().unwrap_or(".")])
+                        .status()?;
+                    if !status.success() {
+                        anyhow::bail!("git clone failed");
+                    }
                 }
-                // Restore stashed changes
-                if stashed {
-                    let _ = std::process::Command::new("git")
-                        .args(["stash", "pop"])
-                        .current_dir(&project_root)
-                        .status();
-                }
+
+                // Build in ~/.swarm/repo/tui
                 println!("📦 Building release...");
                 let status = std::process::Command::new("cargo")
                     .args(["build", "--release"])
-                    .current_dir(project_root.join("tui"))
+                    .current_dir(repo_dir.join("tui"))
                     .status()?;
                 if !status.success() {
                     anyhow::bail!("cargo build --release failed");
                 }
-                let built = project_root.join("tui/target/release/swarm-tui");
-                let install_dir = dirs_home().join(".swarm/bin");
+
+                // Install using temp file + rename to avoid "Text file busy"
+                let built = repo_dir.join("tui/target/release/swarm-tui");
+                let install_dir = swarm_dir.join("bin");
                 std::fs::create_dir_all(&install_dir)?;
                 let dest = install_dir.join("swarm");
-                std::fs::copy(&built, &dest)?;
-                println!("✅ Installed swarm {} to {}", env!("CARGO_PKG_VERSION"), dest.display());
+                let tmp_dest = install_dir.join("swarm.new");
+                std::fs::copy(&built, &tmp_dest)?;
+                // Remove old binary first (avoids ETXTBSY on Linux)
+                let _ = std::fs::remove_file(&dest);
+                std::fs::rename(&tmp_dest, &dest)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+                }
+                println!("✅ Updated swarm to latest version at {}", dest.display());
                 return Ok(());
             }
             _ => {}
