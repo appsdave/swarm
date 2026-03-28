@@ -209,6 +209,8 @@ impl App {
         self.launched = false;
         self.shutdown_requested = false;
         self.completion_logged = false;
+        self.task_input.clear();
+        self.cursor_pos = 0;
 
         for agent in self.agents.values_mut() {
             agent.status = "⏳ idle".into();
