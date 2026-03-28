@@ -22,7 +22,72 @@ This project implements a self-polling, multi-agent swarm using:
 | `request:<agent>:needs` | string | What the agent currently needs from others (free text or JSON) |
 | `request:<agent>:offers` | string | What the agent can provide or has published |
 | `project:status` | string | Overall project state: `in_progress`, `integrating`, `done` |
-| `messages:<from>:<to>` | list | Message queue between agents |
+| `msg:<id>` | list | Agent inbox (direct messages as `sender\|text`) |
+| `swarm:broadcast-log` | list | Persistent broadcast message log (capped at 200) |
+
+## Pub/Sub Channels
+
+The backend bridges Redis pub/sub to SSE so frontends and monitors receive
+real-time updates without polling.
+
+| Channel | Purpose |
+|---|---|
+| `swarm:agent-events` | Structured agent lifecycle events (status changes, schema publications, messages) |
+| `swarm:broadcast` | Broadcast messages sent to all agents |
+
+## Backend API Reference
+
+The backend runs on **port 3001** by default (`PORT` env var) and exposes a
+REST+SSE API that wraps the Redis blackboard protocol.
+
+### Health
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Returns `{ status: "ok", timestamp }` |
+
+### Agents
+
+| Method | Path | Body / Query | Description |
+|---|---|---|---|
+| `GET` | `/api/agents` | — | List all known agents with full snapshot |
+| `GET` | `/api/agents/:id` | — | Single agent snapshot (status, task, schema, needs, offers, …) |
+| `PUT` | `/api/agents/:id/status` | `{ status, task? }` | Update agent status and optional task description |
+| `POST` | `/api/agents/:id/block` | `{ waitingFor }` | Mark agent as blocked on a specific key |
+| `POST` | `/api/agents/:id/unblock` | — | Mark agent as running again |
+
+### Messages
+
+| Method | Path | Body / Query | Description |
+|---|---|---|---|
+| `POST` | `/api/messages` | `{ from, to, text }` | Send a direct message to another agent's inbox |
+| `GET` | `/api/messages/:agentId` | — | Read an agent's inbox |
+| `DELETE` | `/api/messages/:agentId` | — | Clear an agent's inbox |
+| `POST` | `/api/messages/broadcast` | `{ from, text }` | Broadcast a message to all agents |
+| `GET` | `/api/messages/broadcast/log` | `?limit=50` (max 200) | Retrieve broadcast message history |
+
+### Schemas
+
+| Method | Path | Body / Query | Description |
+|---|---|---|---|
+| `GET` | `/api/schemas/:agentId` | — | Retrieve a published schema |
+| `PUT` | `/api/schemas/:agentId` | `{ schema }` | Publish or update a schema (JSON object or string) |
+
+### Negotiation
+
+| Method | Path | Body / Query | Description |
+|---|---|---|---|
+| `GET` | `/api/negotiation` | — | Full needs/offers state for all known agents |
+| `PUT` | `/api/negotiation/:agentId/needs` | `{ needs }` | Update what an agent needs from others |
+| `PUT` | `/api/negotiation/:agentId/offers` | `{ offers }` | Update what an agent can provide |
+
+### Events (SSE)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/events` | Server-Sent Events stream of real-time swarm events |
+
+SSE event types: `connected`, `agent-event`, `broadcast`, `raw`.
 
 ## Polling & Negotiation Protocol
 
