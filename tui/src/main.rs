@@ -119,41 +119,32 @@ struct AgentState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActiveTab {
+enum Tab {
     Swarm,
+    Messages,
     History,
     Notifications,
 }
 
-impl ActiveTab {
+impl Tab {
     fn label(self) -> &'static str {
         match self {
             Self::Swarm => "Swarm",
+            Self::Messages => "Messages",
             Self::History => "History",
             Self::Notifications => "Notifications",
         }
     }
     fn next(self) -> Self {
         match self {
-            Self::Swarm => Self::History,
+            Self::Swarm => Self::Messages,
+            Self::Messages => Self::History,
             Self::History => Self::Notifications,
             Self::Notifications => Self::Swarm,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewTab {
-    Logs,
-    Messages,
-}
-
-impl ViewTab {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Logs => "Logs",
-            Self::Messages => "Messages",
-        }
+    fn all() -> &'static [Tab] {
+        &[Tab::Swarm, Tab::Messages, Tab::History, Tab::Notifications]
     }
 }
 
@@ -255,10 +246,7 @@ struct App {
     task_input: String,
     cursor_pos: usize,
     schema_state: HashMap<String, bool>,
-    // Top-level tab
-    active_tab: ActiveTab,
-    // Sub-view within Swarm tab
-    view_tab: ViewTab,
+    active_tab: Tab,
     messages: Vec<MessageEntry>,
     // Backend status
     backend_status: BackendStatus,
@@ -316,8 +304,7 @@ impl App {
             task_input: task_prompt.clone().unwrap_or_default(),
             cursor_pos: task_prompt.as_deref().unwrap_or_default().len(),
             schema_state: HashMap::new(),
-            active_tab: ActiveTab::Swarm,
-            view_tab: ViewTab::Logs,
+            active_tab: Tab::Swarm,
             backend_status: BackendStatus::default(),
             run_history: Vec::new(),
             notifications: Vec::new(),
@@ -1367,42 +1354,29 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     draw_backend_status_bar(f, app, chunks[1]);
 
     match app.active_tab {
-        ActiveTab::Swarm => draw_swarm_tab(f, app, chunks[2]),
-        ActiveTab::History => draw_history_tab(f, app, chunks[2]),
-        ActiveTab::Notifications => draw_notifications_tab(f, app, chunks[2]),
+        Tab::Swarm => draw_swarm_tab(f, app, chunks[2]),
+        Tab::Messages => draw_messages_tab(f, app, chunks[2]),
+        Tab::History => draw_history_tab(f, app, chunks[2]),
+        Tab::Notifications => draw_notifications_tab(f, app, chunks[2]),
     }
 
     draw_help(f, app, chunks[3]);
 }
 
 fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let tabs = [ActiveTab::Swarm, ActiveTab::History, ActiveTab::Notifications];
     let mut spans: Vec<Span> = Vec::new();
-    for tab in &tabs {
+    for tab in Tab::all() {
         let style = if *tab == app.active_tab {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        spans.push(Span::styled(format!(" {} ", tab.label()), style));
-        if *tab == ActiveTab::Swarm && app.active_tab == ActiveTab::Swarm {
-            let logs_style = if app.view_tab == ViewTab::Logs {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            let msgs_style = if app.view_tab == ViewTab::Messages {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            spans.push(Span::styled(" (", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(ViewTab::Logs.label(), logs_style));
-            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(format!("{} ({})", ViewTab::Messages.label(), app.messages.len()), msgs_style));
-            spans.push(Span::styled(") ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled("[v]", Style::default().fg(Color::Yellow)));
-        }
+        let label = if *tab == Tab::Messages {
+            format!(" {} ({}) ", tab.label(), app.messages.len())
+        } else {
+            format!(" {} ", tab.label())
+        };
+        spans.push(Span::styled(label, style));
         spans.push(Span::raw("│"));
     }
 
@@ -1459,14 +1433,33 @@ fn draw_swarm_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .split(area);
 
     draw_status(f, app, chunks[0]);
-    match app.view_tab {
-        ViewTab::Logs => draw_logs(f, app, chunks[1]),
-        ViewTab::Messages => draw_messages(f, app, chunks[1]),
-    }
+    draw_logs(f, app, chunks[1]);
     if app.composing {
         draw_compose_input(f, app, chunks[2]);
     } else {
         draw_task_input(f, app, chunks[2]);
+    }
+}
+
+fn draw_messages_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let compose_height: u16 = 3;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(10), Constraint::Length(compose_height)])
+        .split(area);
+
+    draw_messages(f, app, chunks[0]);
+    if app.composing {
+        draw_compose_input(f, app, chunks[1]);
+    } else {
+        let hint = Paragraph::new(" Press Ctrl+M to send a message")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            );
+        f.render_widget(hint, chunks[1]);
     }
 }
 
@@ -1886,21 +1879,23 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(" "));
 
-    match app.active_tab {
-        ActiveTab::Swarm => {
-            if app.composing {
-                spans.push(Span::styled("Enter", key_style));
-                spans.push(Span::styled(" Send", desc_style));
-                spans.push(sep.clone());
-                spans.push(Span::styled("Esc", key_style));
-                spans.push(Span::styled(" Cancel", desc_style));
-                spans.push(sep.clone());
-                spans.push(Span::styled("Ctrl+T", key_style));
-                spans.push(Span::styled(" Switch target", desc_style));
-            } else if !app.launched {
-                spans.push(Span::styled("Enter", key_style));
-                spans.push(Span::styled(" Launch swarm", desc_style));
-                spans.push(sep.clone());
+    if app.composing {
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Send", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Esc", key_style));
+        spans.push(Span::styled(" Cancel", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Ctrl+T", key_style));
+        spans.push(Span::styled(" Switch target", desc_style));
+    } else {
+        match app.active_tab {
+            Tab::Swarm => {
+                if !app.launched {
+                    spans.push(Span::styled("Enter", key_style));
+                    spans.push(Span::styled(" Launch", desc_style));
+                    spans.push(sep.clone());
+                }
                 spans.push(Span::styled("q", key_style));
                 spans.push(Span::styled("/", desc_style));
                 spans.push(Span::styled("Esc", key_style));
@@ -1909,38 +1904,33 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
                 spans.push(Span::styled("Tab", key_style));
                 spans.push(Span::styled(" Switch tab", desc_style));
                 spans.push(sep.clone());
-                spans.push(Span::styled("v", key_style));
-                spans.push(Span::styled(" Logs/Messages", desc_style));
-                spans.push(sep.clone());
                 spans.push(Span::styled("Ctrl+M", key_style));
-                spans.push(Span::styled(" Send message", desc_style));
-            } else {
-                spans.push(Span::styled("q", key_style));
-                spans.push(Span::styled("/", desc_style));
-                spans.push(Span::styled("Esc", key_style));
-                spans.push(Span::styled(" Quit", desc_style));
-                spans.push(sep.clone());
-                spans.push(Span::styled("Tab", key_style));
-                spans.push(Span::styled(" Switch tab", desc_style));
-                spans.push(sep.clone());
-                spans.push(Span::styled("v", key_style));
-                spans.push(Span::styled(" Logs/Messages", desc_style));
-                spans.push(sep.clone());
-                spans.push(Span::styled("Ctrl+M", key_style));
-                spans.push(Span::styled(" Send message", desc_style));
+                spans.push(Span::styled(" Message", desc_style));
             }
-        }
-        ActiveTab::History | ActiveTab::Notifications => {
-            spans.push(Span::styled("↑/↓", key_style));
-            spans.push(Span::styled(" Scroll", desc_style));
-            spans.push(sep.clone());
-            spans.push(Span::styled("Tab", key_style));
-            spans.push(Span::styled(" Switch tab", desc_style));
-            spans.push(sep.clone());
-            spans.push(Span::styled("q", key_style));
-            spans.push(Span::styled("/", desc_style));
-            spans.push(Span::styled("Esc", key_style));
-            spans.push(Span::styled(" Quit", desc_style));
+            Tab::Messages => {
+                spans.push(Span::styled("Ctrl+M", key_style));
+                spans.push(Span::styled(" Compose", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Tab", key_style));
+                spans.push(Span::styled(" Switch tab", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("q", key_style));
+                spans.push(Span::styled("/", desc_style));
+                spans.push(Span::styled("Esc", key_style));
+                spans.push(Span::styled(" Quit", desc_style));
+            }
+            Tab::History | Tab::Notifications => {
+                spans.push(Span::styled("↑/↓", key_style));
+                spans.push(Span::styled(" Scroll", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Tab", key_style));
+                spans.push(Span::styled(" Switch tab", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("q", key_style));
+                spans.push(Span::styled("/", desc_style));
+                spans.push(Span::styled("Esc", key_style));
+                spans.push(Span::styled(" Quit", desc_style));
+            }
         }
     }
 
@@ -2509,7 +2499,7 @@ async fn main() -> Result<()> {
         if event::poll(timeout)? {
             if let CEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if app.composing && app.active_tab == ActiveTab::Swarm {
+                    if app.composing {
                         // Compose mode key handling
                         match key.code {
                             KeyCode::Esc => {
@@ -2587,44 +2577,38 @@ async fn main() -> Result<()> {
                                 app.active_tab = app.active_tab.next();
                             }
                             KeyCode::Up => match app.active_tab {
-                                ActiveTab::History => {
+                                Tab::History => {
                                     app.history_scroll = app.history_scroll.saturating_sub(1);
                                 }
-                                ActiveTab::Notifications => {
+                                Tab::Notifications => {
                                     app.notif_scroll = app.notif_scroll.saturating_sub(1);
                                 }
                                 _ => {}
                             },
                             KeyCode::Down => match app.active_tab {
-                                ActiveTab::History => {
+                                Tab::History => {
                                     if app.history_scroll < app.run_history.len().saturating_sub(1) {
                                         app.history_scroll += 1;
                                     }
                                 }
-                                ActiveTab::Notifications => {
+                                Tab::Notifications => {
                                     if app.notif_scroll < app.notifications.len().saturating_sub(1) {
                                         app.notif_scroll += 1;
                                     }
                                 }
                                 _ => {}
                             },
-                            KeyCode::Char('v') if app.active_tab == ActiveTab::Swarm => {
-                                app.view_tab = match app.view_tab {
-                                    ViewTab::Logs => ViewTab::Messages,
-                                    ViewTab::Messages => ViewTab::Logs,
-                                };
-                            }
-                            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(app.active_tab, Tab::Swarm | Tab::Messages) => {
                                 app.composing = true;
                                 app.compose_input.clear();
                                 app.compose_cursor = 0;
-                                app.view_tab = ViewTab::Messages;
+                                app.active_tab = Tab::Messages;
                             }
-                            KeyCode::Char(ch) if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Char(ch) if !app.launched && app.active_tab == Tab::Swarm => {
                                 app.task_input.insert(app.cursor_pos, ch);
                                 app.cursor_pos += ch.len_utf8();
                             }
-                            KeyCode::Backspace if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Backspace if !app.launched && app.cursor_pos > 0 && app.active_tab == Tab::Swarm => {
                                 let prev = app.task_input[..app.cursor_pos]
                                     .char_indices()
                                     .next_back()
@@ -2633,17 +2617,17 @@ async fn main() -> Result<()> {
                                 app.task_input.remove(prev);
                                 app.cursor_pos = prev;
                             }
-                            KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == Tab::Swarm => {
                                 app.task_input.remove(app.cursor_pos);
                             }
-                            KeyCode::Left if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Left if !app.launched && app.cursor_pos > 0 && app.active_tab == Tab::Swarm => {
                                 app.cursor_pos = app.task_input[..app.cursor_pos]
                                     .char_indices()
                                     .next_back()
                                     .map(|(i, _)| i)
                                     .unwrap_or(0);
                             }
-                            KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == Tab::Swarm => {
                                 let next = app.task_input[app.cursor_pos..]
                                     .char_indices()
                                     .nth(1)
@@ -2651,13 +2635,13 @@ async fn main() -> Result<()> {
                                     .unwrap_or(app.task_input.len());
                                 app.cursor_pos = next;
                             }
-                            KeyCode::Home if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Home if !app.launched && app.active_tab == Tab::Swarm => {
                                 app.cursor_pos = 0;
                             }
-                            KeyCode::End if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::End if !app.launched && app.active_tab == Tab::Swarm => {
                                 app.cursor_pos = app.task_input.len();
                             }
-                            KeyCode::Enter if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            KeyCode::Enter if !app.launched && app.active_tab == Tab::Swarm => {
                                 let launch_task = app.current_task_prompt();
                                 let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
                                 app.task_input.clear();
