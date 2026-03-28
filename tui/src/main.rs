@@ -2521,6 +2521,57 @@ fn render_prompt(
 #[tokio::main]
 async fn main() -> Result<()> {
     let project_root = project_root()?;
+
+    // Handle CLI flags before launching TUI
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "-h" | "--help" => {
+                println!("swarm - AI agent swarm TUI\n");
+                println!("USAGE:");
+                println!("  swarm [OPTIONS] [TASK]\n");
+                println!("OPTIONS:");
+                println!("  -h, --help       Show this help message");
+                println!("  -v, --version    Show version");
+                println!("  -u, --update     Pull latest code, rebuild, and reinstall\n");
+                println!("ARGS:");
+                println!("  [TASK]           Optional task prompt for agents");
+                println!("                   (or set SWARM_TASK_PROMPT env var)");
+                return Ok(());
+            }
+            "-v" | "--version" => {
+                println!("swarm {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "-u" | "--update" => {
+                println!("🔄 Updating swarm...");
+                let status = std::process::Command::new("git")
+                    .args(["pull", "--rebase", "origin", "main"])
+                    .current_dir(&project_root)
+                    .status()?;
+                if !status.success() {
+                    anyhow::bail!("git pull failed");
+                }
+                println!("📦 Building release...");
+                let status = std::process::Command::new("cargo")
+                    .args(["build", "--release"])
+                    .current_dir(project_root.join("tui"))
+                    .status()?;
+                if !status.success() {
+                    anyhow::bail!("cargo build --release failed");
+                }
+                let built = project_root.join("tui/target/release/swarm-tui");
+                let install_dir = dirs_home().join(".swarm/bin");
+                std::fs::create_dir_all(&install_dir)?;
+                let dest = install_dir.join("swarm");
+                std::fs::copy(&built, &dest)?;
+                println!("✅ Installed swarm {} to {}", env!("CARGO_PKG_VERSION"), dest.display());
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let task_prompt = task_prompt_from_args();
     let specs = build_agent_specs(&project_root, None)?;
     let junie_path = resolve_junie()?;
