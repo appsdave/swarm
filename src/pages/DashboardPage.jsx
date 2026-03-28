@@ -3,6 +3,7 @@ import useProjects from '../features/projects/hooks/useProjects';
 import useTasks from '../features/tasks/hooks/useTasks';
 import Spinner from '../components/ui/Spinner';
 import PromptBox from '../features/prompt/components/PromptBox';
+import AgentPanel from '../features/agents/components/AgentPanel';
 import './DashboardPage.css';
 
 export default function DashboardPage() {
@@ -17,6 +18,11 @@ export default function DashboardPage() {
 
       <section className="dashboard__prompt">
         <PromptBox />
+      </section>
+
+      <section className="dashboard__agents">
+        <AgentPanel id="A1" label="Frontend Agent" size="primary" />
+        <AgentPanel id="B1" label="Backend Agent" size="secondary" />
       </section>
 
       <div className="dashboard__cards">

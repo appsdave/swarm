@@ -6,6 +6,13 @@ import './PromptBox.css';
 
 const AGENT_POLL_INTERVAL = 4000;
 
+const TIPS = [
+  { icon: '⌨️', text: 'Press Ctrl + Enter to send' },
+  { icon: '🎯', text: 'Be specific — mention files, features, or endpoints' },
+  { icon: '📋', text: 'Break complex tasks into smaller steps for best results' },
+  { icon: '↩️', text: 'Use "Recall" to reuse your last prompt' },
+];
+
 export default function PromptBox() {
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
@@ -20,25 +27,39 @@ export default function PromptBox() {
     setError(null);
 
     const ta = e.target;
-    // Allow the browser to update scroll position after value change,
-    // then ensure the caret is visible by scrolling to it.
     requestAnimationFrame(() => {
-      // scrollHeight updates after the value is set; the native caret
-      // tracking works for most cases, but when the textarea is
-      // constrained in height (max-height) and text exceeds the
-      // viewport, we nudge scrollTop so the caret row is visible.
       const { selectionEnd, value } = ta;
-      // Rough line count up to caret
       const textBeforeCaret = value.substring(0, selectionEnd);
-      const linesBefore = textBeforeCaret.split('\n').length;
       const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
-      const caretY = linesBefore * lineHeight;
-      const visibleBottom = ta.scrollTop + ta.clientHeight;
+
+      // Use a hidden mirror div to measure real visual caret position
+      // accounting for word-wrap on long lines without newlines.
+      const mirror = document.createElement('div');
+      const style = getComputedStyle(ta);
+      mirror.style.cssText = [
+        'position:absolute',
+        'visibility:hidden',
+        'white-space:pre-wrap',
+        'word-wrap:break-word',
+        `width:${ta.clientWidth}px`,
+        `font:${style.font}`,
+        `letter-spacing:${style.letterSpacing}`,
+        `padding:${style.padding}`,
+        `border:${style.border}`,
+        `line-height:${style.lineHeight}`,
+      ].join(';');
+      mirror.textContent = textBeforeCaret || '.';
+      document.body.appendChild(mirror);
+      const caretY = mirror.scrollHeight;
+      document.body.removeChild(mirror);
+
+      const visibleTop = ta.scrollTop;
+      const visibleBottom = visibleTop + ta.clientHeight;
 
       if (caretY > visibleBottom) {
         ta.scrollTop = caretY - ta.clientHeight + lineHeight;
-      } else if (caretY < ta.scrollTop + lineHeight) {
-        ta.scrollTop = Math.max(0, caretY - lineHeight);
+      } else if (caretY - lineHeight < visibleTop) {
+        ta.scrollTop = Math.max(0, caretY - lineHeight * 2);
       }
     });
   }, []);
@@ -146,6 +167,15 @@ export default function PromptBox() {
           )}
         </Button>
       </div>
+
+      <ul className="prompt-box__tips">
+        {TIPS.map((tip) => (
+          <li key={tip.text} className="prompt-box__tip">
+            <span className="prompt-box__tip-icon">{tip.icon}</span>
+            {tip.text}
+          </li>
+        ))}
+      </ul>
 
       {agentsRunning && (
         <div className="prompt-box__status">
