@@ -1165,25 +1165,48 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let launch_msg = if !app.launched {
-        "[Enter] Launch"
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let desc_style = Style::default().fg(Color::Gray);
+    let error_style = Style::default().fg(Color::Red);
+
+    let sep = Span::styled("  │  ", sep_style);
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+
+    if !app.launched {
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Launch swarm", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("←/→", key_style));
+        spans.push(Span::styled(" Move cursor", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Home/End", key_style));
+        spans.push(Span::styled(" Jump to start/end", desc_style));
     } else {
-        "[Enter] Relaunch after exit"
-    };
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Relaunch after exit", desc_style));
+    }
 
-    let redis = app
-        .redis_error
-        .as_deref()
-        .map(|e| format!(" | redis: {e}"))
-        .unwrap_or_default();
-    let text = format!(
-        " {launch_msg} | [q] Quit | [Backspace] Edit | Logs & Redis reset each run{}",
-        redis
-    );
+    spans.push(sep.clone());
+    spans.push(Span::styled("q / Esc", key_style));
+    spans.push(Span::styled(" Quit", desc_style));
 
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::DarkGray))
-        .wrap(Wrap { trim: true });
+    if !app.launched {
+        spans.push(sep.clone());
+        spans.push(Span::styled("Logs & Redis reset each run", sep_style));
+    }
+
+    if let Some(e) = &app.redis_error {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("⚠ Redis: {e}"), error_style));
+    }
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 }
 
