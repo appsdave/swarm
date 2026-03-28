@@ -39,6 +39,9 @@ if git diff --quiet HEAD && git diff --cached --quiet && [ -z "$(git ls-files --
 fi
 
 # ── 2. Commit ────────────────────────────────────────────────────────
+# Remove build artifacts that should never be committed
+git rm -r --cached --ignore-unmatch target/ tui/target/ node_modules/ 2>/dev/null || true
+
 echo "[$LABEL] Committing changes..."
 git add -A
 git commit -m "feat($LABEL): auto-commit agent work" \

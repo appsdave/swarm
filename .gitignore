@@ -5,6 +5,7 @@ node_modules/
 .env
 coverage/
 dist/
+target/
 tui/target/
 .output.txt
 .swarm/
