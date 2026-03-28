@@ -150,6 +150,7 @@ struct App {
     quit: bool,
     shutdown_requested: bool,
     completion_logged: bool,
+    #[allow(dead_code)]
     junie_path: String,
     task_input: String,
     cursor_pos: usize,
