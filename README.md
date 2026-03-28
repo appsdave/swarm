@@ -21,6 +21,7 @@ This project implements a self-polling, multi-agent swarm using:
 | `blocked:<agent>` | string | What the agent is waiting for, e.g. `schema:backend` |
 | `request:<agent>:needs` | string | What the agent currently needs from others (free text or JSON) |
 | `request:<agent>:offers` | string | What the agent can provide or has published |
+| `push:<label>` | string | Post-completion push status set by `post-agent-commit.sh`: `pushing`, `done`, or `failed` (expires after 600 s) |
 | `project:status` | string | Overall project state: `in_progress`, `integrating`, `done` |
 | `msg:<id>` | list | Agent inbox (direct messages as `sender\|text`) |
 | `swarm:broadcast-log` | list | Persistent broadcast message log (capped at 200) |
@@ -95,7 +96,7 @@ SSE event types: `connected`, `agent-event`, `broadcast`, `raw`.
 2. Agent publishes `request:<id>:offers` (what it can provide) and `request:<id>:needs` (what it needs from others).
 3. Agent checks `request:<other>:needs` — if it can fulfill a request, it prioritizes publishing that data immediately.
 4. When blocked, agent sets `agent:<id>:status` → `blocked` and `blocked:<id>` → the key it needs.
-5. Agent enters polling loop: `sleep 15` → check Redis for the needed key → also check `request:<other>:needs` and fulfill if possible → repeat.
+5. Agent enters polling loop: `sleep 60` → check Redis for the needed key → also check `request:<other>:needs` and fulfill if possible → repeat.
 6. When the needed data appears, agent sets status back to `running`, cleans up `blocked:<id>` and `request:<id>:needs`.
 7. On completion, agent sets `agent:<id>:status` → `done`.
 
