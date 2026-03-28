@@ -764,7 +764,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .constraints([
             Constraint::Length(10),
             Constraint::Min(10),
-            Constraint::Length(3),
+            Constraint::Length(6),
             Constraint::Length(3),
         ])
         .split(f.area());
@@ -882,6 +882,31 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
         Style::default().fg(Color::White)
     };
 
+    // Calculate the inner width (area minus borders) to determine wrapped line count
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as u16;
+
+    // Estimate the number of wrapped lines the text will occupy
+    let wrapped_lines = if inner_width > 0 {
+        prompt
+            .lines()
+            .map(|line| {
+                let len = line.chars().count();
+                if len == 0 {
+                    1
+                } else {
+                    ((len as f64) / (inner_width as f64)).ceil() as u16
+                }
+            })
+            .sum::<u16>()
+            .max(1)
+    } else {
+        1
+    };
+
+    // Auto-scroll so the bottom of the text is always visible
+    let scroll_offset = wrapped_lines.saturating_sub(inner_height);
+
     let paragraph = Paragraph::new(prompt)
         .style(style)
         .block(
@@ -890,7 +915,8 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: true })
+        .scroll((scroll_offset, 0));
 
     f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
