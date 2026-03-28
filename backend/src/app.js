@@ -6,6 +6,8 @@ import messagesRouter from "./routes/messages.js";
 import schemasRouter from "./routes/schemas.js";
 import negotiationRouter from "./routes/negotiation.js";
 import eventsRouter from "./routes/events.js";
+import runsRouter from "./routes/runs.js";
+import notificationsRouter from "./routes/notifications.js";
 
 /**
  * Create and configure the Express application.
@@ -29,6 +31,8 @@ export function createApp() {
   app.use("/api/schemas", schemasRouter);
   app.use("/api/negotiation", negotiationRouter);
   app.use("/api/events", eventsRouter);
+  app.use("/api/runs", runsRouter);
+  app.use("/api/notifications", notificationsRouter);
 
   // Global error handler
   app.use((err, _req, res, _next) => {
