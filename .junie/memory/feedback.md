@@ -142,3 +142,75 @@
     "NEW INSTRUCTION": "WHEN TUI shows 'Request failed: 404' on prompt send THEN show steps to verify API endpoint, fix URL in config, ensure server running, and retest with curl"
 }
 
+[2026-03-28 19:39] - Updated by Junie
+{
+    "TYPE": "preference",
+    "CATEGORY": "auto worktree creation",
+    "EXPECTATION": "User expects the swarm to create required agent worktrees automatically when they are missing.",
+    "NEW INSTRUCTION": "WHEN swarm shows 'No matching worktrees found' THEN run 'swarm setup' to create agent branches and worktrees and verify"
+}
+
+[2026-03-28 19:41] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "worktree already registered",
+    "EXPECTATION": "User expected swarm to recover from 'missing but already registered worktree' and continue launching.",
+    "NEW INSTRUCTION": "WHEN git says 'missing but already registered worktree' THEN run 'git worktree prune' then 'git worktree add -f <path> <branch>' and retry"
+}
+
+[2026-03-28 19:46] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "push rejected + auto pull",
+    "EXPECTATION": "User wants backend push failures due to non-fast-forward resolved and merge conflicts fixed, and for the swarm to auto-pull updates at launch of each new task.",
+    "NEW INSTRUCTION": "WHEN launching new task OR push rejected non-fast-forward THEN run git pull --rebase in all worktrees and retry push or force-with-lease"
+}
+
+[2026-03-28 19:52] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "wrong project context",
+    "EXPECTATION": "User wants agents to know this is a Rust TUI (not a web app), delete and reinitialize worktrees, and analyze the project before making edits.",
+    "NEW INSTRUCTION": "WHEN agent suggests web app changes or files THEN set prompts to 'Rust TUI', recreate worktrees, analyze before edits"
+}
+
+[2026-03-28 19:53] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "over-specific prompts",
+    "EXPECTATION": "User wants backend agents to re-analyze the current repository on start and not assume this specific TUI project.",
+    "NEW INSTRUCTION": "WHEN backend agent starts in any repository THEN run fresh codebase analysis and set project context dynamically"
+}
+
+[2026-03-28 19:54] - Updated by Junie
+{
+    "TYPE": "preference",
+    "CATEGORY": "project understanding",
+    "EXPECTATION": "User wants agents to analyze the current project and context first so they don’t produce irrelevant or random changes.",
+    "NEW INSTRUCTION": "WHEN any agent starts on a repository THEN analyze repo and summarize plan before edits"
+}
+
+[2026-03-28 20:35] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "gitignore not applied",
+    "EXPECTATION": "User expects Rust build artifacts (target/.fingerprint) to be ignored and not appear in PRs.",
+    "NEW INSTRUCTION": "WHEN PR shows target/.fingerprint files THEN add target/ to .gitignore, purge cached files, and push"
+}
+
+[2026-03-28 22:02] - Updated by Junie
+{
+    "TYPE": "preference",
+    "CATEGORY": "use paid resources",
+    "EXPECTATION": "User wants solutions that leverage already-paid Render resources instead of removing or downgrading them.",
+    "NEW INSTRUCTION": "WHEN user says they already paid for Render resources THEN propose ways to utilize and optimize them rather than suggest removal"
+}
+
+[2026-03-28 22:29] - Updated by Junie
+{
+    "TYPE": "preference",
+    "CATEGORY": "prefer TUI",
+    "EXPECTATION": "User wants solutions that avoid browser/web dashboards and keep functionality inside the TUI.",
+    "NEW INSTRUCTION": "WHEN suggesting dashboards or control planes THEN propose in-TUI features and avoid web UI"
+}
+

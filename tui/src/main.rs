@@ -17,6 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
+use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -24,6 +25,63 @@ use tokio::sync::mpsc;
 const MAX_LOGS_PER_AGENT: usize = 1000;
 const MAX_GROUP_LOGS: usize = 2000;
 const MAX_MESSAGES: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveTab {
+    Swarm,
+    History,
+    Notifications,
+}
+
+impl ActiveTab {
+    fn next(self) -> Self {
+        match self {
+            Self::Swarm => Self::History,
+            Self::History => Self::Notifications,
+            Self::Notifications => Self::Swarm,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Swarm => "Swarm",
+            Self::History => "History",
+            Self::Notifications => "Notifications",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct RunRecord {
+    id: Option<String>,
+    task: Option<String>,
+    agents: Option<Vec<serde_json::Value>>,
+    duration: Option<serde_json::Value>,
+    outcome: Option<String>,
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct Notification {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    ntype: Option<String>,
+    #[serde(rename = "agentId")]
+    agent_id: Option<String>,
+    message: Option<String>,
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct BackendStatus {
+    healthy: bool,
+    last_check: String,
+    agent_count: usize,
+    redis_memory: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum AgentRole {
@@ -161,7 +219,13 @@ enum AppEvent {
     RedisError(String),
     AgentSpawned { agent_id: String, pid: u32 },
     AgentExited { agent_id: String, code: Option<i32> },
+<<<<<<< Updated upstream
     MessageSent { to: String, body: String },
+=======
+    BackendHealth { healthy: bool, timestamp: String },
+    BackendRuns(Vec<RunRecord>),
+    BackendNotifications(Vec<Notification>),
+>>>>>>> Stashed changes
 }
 
 #[derive(Debug)]
@@ -185,6 +249,7 @@ struct App {
     task_input: String,
     cursor_pos: usize,
     schema_state: HashMap<String, bool>,
+<<<<<<< Updated upstream
     // Agent communication features
     active_tab: ViewTab,
     messages: Vec<MessageEntry>,
@@ -194,6 +259,15 @@ struct App {
     compose_target: AgentRole,
     agent_offers: HashMap<String, String>,
     agent_needs: HashMap<String, String>,
+=======
+    active_tab: ActiveTab,
+    run_history: Vec<RunRecord>,
+    notifications: Vec<Notification>,
+    backend_status: BackendStatus,
+    history_scroll: usize,
+    notif_scroll: usize,
+    backend_url: String,
+>>>>>>> Stashed changes
 }
 
 impl App {
@@ -237,6 +311,7 @@ impl App {
             task_input: task_prompt.clone().unwrap_or_default(),
             cursor_pos: task_prompt.as_deref().unwrap_or_default().len(),
             schema_state: HashMap::new(),
+<<<<<<< Updated upstream
             active_tab: ViewTab::Logs,
             messages: Vec::new(),
             composing: false,
@@ -245,6 +320,20 @@ impl App {
             compose_target: AgentRole::Frontend,
             agent_offers: HashMap::new(),
             agent_needs: HashMap::new(),
+=======
+            active_tab: ActiveTab::Swarm,
+            run_history: Vec::new(),
+            notifications: Vec::new(),
+            backend_status: BackendStatus {
+                healthy: false,
+                last_check: "never".into(),
+                agent_count: 0,
+                redis_memory: "unknown".into(),
+            },
+            history_scroll: 0,
+            notif_scroll: 0,
+            backend_url: String::new(),
+>>>>>>> Stashed changes
         }
     }
 
@@ -276,7 +365,7 @@ impl App {
         }
     }
 
-    fn finalize_completed_run(&mut self) {
+    fn finalize_completed_run(&mut self, backend_url: &str) {
         if self.completion_logged {
             return;
         }
@@ -284,6 +373,9 @@ impl App {
         self.completion_logged = true;
         self.launched = false;
         self.shutdown_requested = false;
+
+        let all_success = self.agents.values().all(|a| a.exit_code == Some(0));
+        let outcome = if all_success { "success" } else { "failure" };
 
         let finished = self
             .agents
@@ -308,6 +400,23 @@ impl App {
         self.push_system_log(format!(
             "All agent processes have exited. One-off swarm task finished: {finished}. Edit the task and press [Enter] to start a fresh run."
         ));
+
+        // Save run to backend
+        let task = self.task_input.trim().to_string();
+        let agent_names: Vec<String> = self.agents.values().map(|a| a.spec.label.clone()).collect();
+        let url = format!("{backend_url}/api/runs");
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let _ = client
+                .post(&url)
+                .json(&serde_json::json!({
+                    "task": task,
+                    "agents": agent_names,
+                    "outcome": outcome,
+                }))
+                .send()
+                .await;
+        });
     }
 
     fn push_limited(logs: &mut Vec<String>, line: String, max: usize) {
@@ -442,6 +551,16 @@ impl App {
                     self.push_group_log(role, prefixed);
                 }
             }
+            AppEvent::BackendHealth { healthy, timestamp } => {
+                self.backend_status.healthy = healthy;
+                self.backend_status.last_check = timestamp;
+            }
+            AppEvent::BackendRuns(runs) => {
+                self.run_history = runs;
+            }
+            AppEvent::BackendNotifications(notifs) => {
+                self.notifications = notifs;
+            }
         }
 
         if self.launched && !self.shutdown_requested && self.all_agents_done_in_redis() {
@@ -450,7 +569,8 @@ impl App {
         }
 
         if self.launched && self.all_agents_exited() {
-            self.finalize_completed_run();
+            let url = self.backend_url.clone();
+            self.finalize_completed_run(&url);
         }
     }
 
@@ -1219,11 +1339,146 @@ async fn clear_swarm_redis_state(
     }
 }
 
+async fn backend_poller(
+    backend_url: String,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    loop {
+        // Poll health
+        let health_ok = client
+            .get(format!("{backend_url}/api/health"))
+            .send()
+            .await
+            .and_then(|r| Ok(r.status().is_success()))
+            .unwrap_or(false);
+
+        // Poll agents count
+        let _agent_count = if health_ok {
+            client
+                .get(format!("{backend_url}/api/agents"))
+                .send()
+                .await
+                .ok()
+                .and_then(|r| {
+                    if r.status().is_success() {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|_r| {
+                    None::<usize>
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Poll run history
+        if let Ok(resp) = client.get(format!("{backend_url}/api/runs?limit=50")).send().await {
+            if let Ok(runs) = resp.json::<Vec<RunRecord>>().await {
+                let _ = tx.send(AppEvent::BackendRuns(runs));
+            }
+        }
+
+        // Poll notifications
+        if let Ok(resp) = client.get(format!("{backend_url}/api/notifications?limit=50")).send().await {
+            if let Ok(notifs) = resp.json::<Vec<Notification>>().await {
+                let _ = tx.send(AppEvent::BackendNotifications(notifs));
+            }
+        }
+
+        let _ = tx.send(AppEvent::BackendHealth {
+            healthy: health_ok,
+            timestamp: chrono::Utc::now().format("%H:%M:%S").to_string(),
+        });
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
 fn draw(f: &mut ratatui::Frame, app: &App) {
+<<<<<<< Updated upstream
     let available_width = f.area().width.saturating_sub(2) as usize;
     let bottom_input_height = if app.composing {
         3u16
     } else if available_width == 0 {
+=======
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(3),
+        ])
+        .split(f.area());
+
+    draw_tab_bar(f, app, chunks[0]);
+    draw_backend_status_bar(f, app, chunks[1]);
+
+    match app.active_tab {
+        ActiveTab::Swarm => draw_swarm_tab(f, app, chunks[2]),
+        ActiveTab::History => draw_history_tab(f, app, chunks[2]),
+        ActiveTab::Notifications => draw_notifications_tab(f, app, chunks[2]),
+    }
+
+    draw_help(f, app, chunks[3]);
+}
+
+fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let tabs = [ActiveTab::Swarm, ActiveTab::History, ActiveTab::Notifications];
+    let spans: Vec<Span> = tabs
+        .iter()
+        .flat_map(|tab| {
+            let style = if *tab == app.active_tab {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            vec![
+                Span::styled(format!(" {} ", tab.label()), style),
+                Span::raw("│"),
+            ]
+        })
+        .collect();
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line).block(
+        Block::default()
+            .title(" [Tab] Switch View ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::White)),
+    );
+    f.render_widget(paragraph, area);
+}
+
+fn draw_backend_status_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let health_icon = if app.backend_status.healthy { "🟢" } else { "🔴" };
+    let text = format!(
+        " Backend: {health_icon} {} | Last check: {} | Redis: {}",
+        if app.backend_status.healthy { "Connected" } else { "Disconnected" },
+        app.backend_status.last_check,
+        app.backend_status.redis_memory,
+    );
+    let paragraph = Paragraph::new(text).block(
+        Block::default()
+            .title(" Backend Status ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if app.backend_status.healthy { Color::Green } else { Color::Red })),
+    );
+    f.render_widget(paragraph, area);
+}
+
+fn draw_swarm_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let available_width = area.width.saturating_sub(2) as usize;
+    let task_input_height = if available_width == 0 {
+>>>>>>> Stashed changes
         3
     } else {
         let display_text = if app.task_input.trim().is_empty() {
@@ -1238,14 +1493,21 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+<<<<<<< Updated upstream
             Constraint::Length(12),
             Constraint::Min(10),
             Constraint::Length(bottom_input_height),
             Constraint::Length(3),
+=======
+            Constraint::Length(10),
+            Constraint::Min(5),
+            Constraint::Length(task_input_height),
+>>>>>>> Stashed changes
         ])
-        .split(f.area());
+        .split(area);
 
     draw_status(f, app, chunks[0]);
+<<<<<<< Updated upstream
     match app.active_tab {
         ViewTab::Logs => draw_logs(f, app, chunks[1]),
         ViewTab::Messages => draw_messages(f, app, chunks[1]),
@@ -1256,6 +1518,99 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         draw_task_input(f, app, chunks[2]);
     }
     draw_help(f, app, chunks[3]);
+=======
+    draw_logs(f, app, chunks[1]);
+    draw_task_input(f, app, chunks[2]);
+}
+
+fn draw_history_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = app
+        .run_history
+        .iter()
+        .skip(app.history_scroll)
+        .take(inner_height)
+        .map(|run| {
+            let outcome_icon = match run.outcome.as_deref() {
+                Some("success") => "✅",
+                Some("failure") | Some("failed") => "❌",
+                _ => "⏳",
+            };
+            let task = run.task.as_deref().unwrap_or("unknown");
+            let ts = run.timestamp.as_deref().unwrap_or("?");
+            let dur = run
+                .duration
+                .as_ref()
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "?".into());
+            let agent_count = run.agents.as_ref().map(|a| a.len()).unwrap_or(0);
+            let line = format!(
+                "{outcome_icon} {ts} | {task:.40} | agents:{agent_count} | dur:{dur}"
+            );
+            let style = match run.outcome.as_deref() {
+                Some("success") => Style::default().fg(Color::Green),
+                Some("failure") | Some("failed") => Style::default().fg(Color::Red),
+                _ => Style::default().fg(Color::Yellow),
+            };
+            ListItem::new(Line::from(Span::styled(line, style)))
+        })
+        .collect();
+
+    let title = format!(" Run History ({} runs) [↑/↓ scroll] ", app.run_history.len());
+    let list = List::new(items).block(
+        Block::default()
+            .title(title.as_str())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    f.render_widget(list, area);
+}
+
+fn draw_notifications_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = app
+        .notifications
+        .iter()
+        .skip(app.notif_scroll)
+        .take(inner_height)
+        .map(|notif| {
+            let icon = match notif.ntype.as_deref() {
+                Some("error") => "❌",
+                Some("warning") => "⚠️",
+                Some("success") | Some("complete") => "✅",
+                Some("blocked") => "🚫",
+                _ => "ℹ️",
+            };
+            let ts = notif.timestamp.as_deref().unwrap_or("?");
+            let agent = notif.agent_id.as_deref().unwrap_or("");
+            let msg = notif.message.as_deref().unwrap_or("");
+            let line = if agent.is_empty() {
+                format!("{icon} {ts} | {msg}")
+            } else {
+                format!("{icon} {ts} | [{agent}] {msg}")
+            };
+            let style = match notif.ntype.as_deref() {
+                Some("error") => Style::default().fg(Color::Red),
+                Some("warning") | Some("blocked") => Style::default().fg(Color::Yellow),
+                Some("success") | Some("complete") => Style::default().fg(Color::Green),
+                _ => Style::default().fg(Color::White),
+            };
+            ListItem::new(Line::from(Span::styled(line, style)))
+        })
+        .collect();
+
+    let title = format!(
+        " Notifications ({}) [↑/↓ scroll] ",
+        app.notifications.len()
+    );
+    let list = List::new(items).block(
+        Block::default()
+            .title(title.as_str())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+    f.render_widget(list, area);
+>>>>>>> Stashed changes
 }
 
 fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -1612,6 +1967,7 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
+<<<<<<< Updated upstream
     let key_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -1665,6 +2021,29 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Red),
         ));
     }
+=======
+    let tab_help = match app.active_tab {
+        ActiveTab::Swarm => {
+            let launch_msg = if !app.launched {
+                "[Enter] Launch"
+            } else {
+                "[Enter] Relaunch after exit"
+            };
+            format!("{launch_msg} | [Backspace] Edit")
+        }
+        ActiveTab::History => "[↑/↓] Scroll".into(),
+        ActiveTab::Notifications => "[↑/↓] Scroll".into(),
+    };
+
+    let redis = app
+        .redis_error
+        .as_deref()
+        .map(|e| format!(" | redis: {e}"))
+        .unwrap_or_default();
+    let text = format!(
+        " [Tab] Switch | [q] Quit | {tab_help}{redis}"
+    );
+>>>>>>> Stashed changes
 
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
@@ -2012,6 +2391,13 @@ async fn main() -> Result<()> {
     let redis_url_for_poller = redis_url.clone();
     tokio::spawn(async move { redis_poller(redis_url_for_poller, redis_specs, tx_redis).await });
 
+    let backend_url = std::env::var("SWARM_BACKEND_URL")
+        .unwrap_or_else(|_| "http://localhost:3001".into());
+    app.backend_url = backend_url.clone();
+    let tx_backend = tx.clone();
+    let backend_url_clone = backend_url.clone();
+    tokio::spawn(async move { backend_poller(backend_url_clone, tx_backend).await });
+
     let tick_rate = Duration::from_millis(16);
     let mut last_tick = Instant::now();
     let mut agent_controls: HashMap<String, mpsc::UnboundedSender<AgentCommand>> = HashMap::new();
@@ -2033,6 +2419,7 @@ async fn main() -> Result<()> {
         if event::poll(timeout)? {
             if let CEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+<<<<<<< Updated upstream
                     if app.composing {
                         // Compose mode key handling
                         match key.code {
@@ -2040,6 +2427,82 @@ async fn main() -> Result<()> {
                                 app.composing = false;
                                 app.compose_input.clear();
                                 app.compose_cursor = 0;
+=======
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
+                        KeyCode::Tab => {
+                            app.active_tab = app.active_tab.next();
+                        }
+                        KeyCode::Up => match app.active_tab {
+                            ActiveTab::History => {
+                                app.history_scroll = app.history_scroll.saturating_sub(1);
+                            }
+                            ActiveTab::Notifications => {
+                                app.notif_scroll = app.notif_scroll.saturating_sub(1);
+                            }
+                            _ => {}
+                        },
+                        KeyCode::Down => match app.active_tab {
+                            ActiveTab::History => {
+                                if app.history_scroll < app.run_history.len().saturating_sub(1) {
+                                    app.history_scroll += 1;
+                                }
+                            }
+                            ActiveTab::Notifications => {
+                                if app.notif_scroll < app.notifications.len().saturating_sub(1) {
+                                    app.notif_scroll += 1;
+                                }
+                            }
+                            _ => {}
+                        },
+                        KeyCode::Char(ch) if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            app.task_input.insert(app.cursor_pos, ch);
+                            app.cursor_pos += ch.len_utf8();
+                        }
+                        KeyCode::Backspace if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
+                            // Find the previous char boundary
+                            let prev = app.task_input[..app.cursor_pos]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            app.task_input.remove(prev);
+                            app.cursor_pos = prev;
+                        }
+                        KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
+                            app.task_input.remove(app.cursor_pos);
+                        }
+                        KeyCode::Left if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
+                            // Move cursor back one char
+                            app.cursor_pos = app.task_input[..app.cursor_pos]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                        }
+                        KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
+                            // Move cursor forward one char
+                            let next = app.task_input[app.cursor_pos..]
+                                .char_indices()
+                                .nth(1)
+                                .map(|(i, _)| app.cursor_pos + i)
+                                .unwrap_or(app.task_input.len());
+                            app.cursor_pos = next;
+                        }
+                        KeyCode::Home if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            app.cursor_pos = 0;
+                        }
+                        KeyCode::End if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            app.cursor_pos = app.task_input.len();
+                        }
+                        KeyCode::Enter if !app.launched && app.active_tab == ActiveTab::Swarm => {
+                            let launch_task = app.current_task_prompt();
+                            let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
+                            app.reset_for_next_run();
+                            clear_swarm_redis_state(redis_url.as_deref(), &launch_specs, &tx).await;
+                            while let Ok(ev) = rx.try_recv() {
+                                app.handle_event(ev);
+>>>>>>> Stashed changes
                             }
                             KeyCode::Enter => {
                                 let body = app.compose_input.trim().to_string();
