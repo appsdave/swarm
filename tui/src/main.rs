@@ -153,6 +153,7 @@ enum AppEvent {
     },
     SchemaPublished { key: String, present: bool },
     AgentMessage { from: String, to: String, body: String },
+    BroadcastMessage { from: String, body: String },
     NegotiationUpdate {
         agent_id: String,
         offers: Option<String>,
@@ -188,6 +189,8 @@ struct App {
     // Agent communication features
     active_tab: ViewTab,
     messages: Vec<MessageEntry>,
+    unread_messages: usize,
+    last_broadcast_index: i64,
     composing: bool,
     compose_input: String,
     compose_cursor: usize,
@@ -239,6 +242,8 @@ impl App {
             schema_state: HashMap::new(),
             active_tab: ViewTab::Logs,
             messages: Vec::new(),
+            unread_messages: 0,
+            last_broadcast_index: -1,
             composing: false,
             compose_input: String::new(),
             compose_cursor: 0,
@@ -259,6 +264,8 @@ impl App {
         self.task_input.clear();
         self.cursor_pos = 0;
         self.messages.clear();
+        self.unread_messages = 0;
+        self.last_broadcast_index = -1;
         self.composing = false;
         self.compose_input.clear();
         self.compose_cursor = 0;
@@ -385,9 +392,30 @@ impl App {
                     let overflow = self.messages.len() - MAX_MESSAGES;
                     self.messages.drain(0..overflow);
                 }
+                if self.active_tab != ViewTab::Messages {
+                    self.unread_messages += 1;
+                }
                 let msg = format!("💬 [{from} → {to}] {body}");
                 self.push_agent_log(&to, msg.clone());
                 self.push_agent_log(&from, msg);
+            }
+            AppEvent::BroadcastMessage { from, body } => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+                self.messages.push(MessageEntry {
+                    timestamp: timestamp.clone(),
+                    from: from.clone(),
+                    to: "broadcast".into(),
+                    body: body.clone(),
+                });
+                if self.messages.len() > MAX_MESSAGES {
+                    let overflow = self.messages.len() - MAX_MESSAGES;
+                    self.messages.drain(0..overflow);
+                }
+                if self.active_tab != ViewTab::Messages {
+                    self.unread_messages += 1;
+                }
+                let msg = format!("📢 [{from} → all] {body}");
+                self.push_system_log(msg);
             }
             AppEvent::NegotiationUpdate { agent_id, offers, needs } => {
                 if let Some(o) = offers {
@@ -414,6 +442,9 @@ impl App {
                 if self.messages.len() > MAX_MESSAGES {
                     let overflow = self.messages.len() - MAX_MESSAGES;
                     self.messages.drain(0..overflow);
+                }
+                if self.active_tab != ViewTab::Messages {
+                    self.unread_messages += 1;
                 }
                 let msg = format!("💬 [tui-operator → {to}] {body}");
                 self.push_system_log(msg);
@@ -526,6 +557,8 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
         }
     };
 
+    let mut broadcast_index: i64 = -1;
+
     loop {
         match client.get_multiplexed_async_connection().await {
             Ok(mut con) => loop {
@@ -577,35 +610,30 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
                         blocked,
                     });
 
-                    // Poll message queue for this agent (both id-based and role-based keys)
-                    let msg_keys = vec![
-                        format!("msg:{}", spec.id),
-                        format!("msg:{}", spec.role.as_str()),
-                    ];
-                    for msg_key in msg_keys {
-                        if let Ok(messages) = redis::cmd("LRANGE")
-                            .arg(&msg_key)
-                            .arg(0i64)
-                            .arg(-1i64)
-                            .query_async::<Vec<String>>(&mut con)
-                            .await
-                        {
-                            if !messages.is_empty() {
-                                let _ = redis::cmd("DEL")
-                                    .arg(&msg_key)
-                                    .query_async::<u64>(&mut con)
-                                    .await;
-                                for raw in messages {
-                                    // Messages stored as "from_agent|body"
-                                    let (from, body) = raw.split_once('|')
-                                        .map(|(f, b)| (f.to_string(), b.to_string()))
-                                        .unwrap_or_else(|| ("unknown".into(), raw.clone()));
-                                    let _ = tx.send(AppEvent::AgentMessage {
-                                        from,
-                                        to: spec.id.clone(),
-                                        body,
-                                    });
-                                }
+                    // Poll message queue for this specific agent
+                    let msg_key = format!("msg:{}", spec.id);
+                    if let Ok(messages) = redis::cmd("LRANGE")
+                        .arg(&msg_key)
+                        .arg(0i64)
+                        .arg(-1i64)
+                        .query_async::<Vec<String>>(&mut con)
+                        .await
+                    {
+                        if !messages.is_empty() {
+                            let _ = redis::cmd("DEL")
+                                .arg(&msg_key)
+                                .query_async::<u64>(&mut con)
+                                .await;
+                            for raw in messages {
+                                // Messages stored as "from_agent|body"
+                                let (from, body) = raw.split_once('|')
+                                    .map(|(f, b)| (f.to_string(), b.to_string()))
+                                    .unwrap_or_else(|| ("unknown".into(), raw.clone()));
+                                let _ = tx.send(AppEvent::AgentMessage {
+                                    from,
+                                    to: spec.id.clone(),
+                                    body,
+                                });
                             }
                         }
                     }
@@ -667,6 +695,30 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
                     }
                 }
 
+                // Poll broadcast log (swarm:broadcast-log) — read-only, use index tracking
+                if let Ok(entries) = redis::cmd("LRANGE")
+                    .arg("swarm:broadcast-log")
+                    .arg(0i64)
+                    .arg(-1i64)
+                    .query_async::<Vec<String>>(&mut con)
+                    .await
+                {
+                    let total = entries.len() as i64;
+                    // broadcast-log is newest-first (LPUSH), so reverse for chronological order
+                    let new_start = if broadcast_index < 0 { 0 } else { broadcast_index as usize };
+                    if total as usize > new_start {
+                        // Entries are stored newest-first; the "new" ones are at indices 0..(total - new_start - 1)
+                        let new_count = total as usize - new_start;
+                        for raw in entries.iter().take(new_count).rev() {
+                            let (from, body) = raw.split_once('|')
+                                .map(|(f, b)| (f.to_string(), b.to_string()))
+                                .unwrap_or_else(|| ("unknown".into(), raw.clone()));
+                            let _ = tx.send(AppEvent::BroadcastMessage { from, body });
+                        }
+                    }
+                    broadcast_index = total;
+                }
+
                 tokio::time::sleep(Duration::from_secs(1)).await;
             },
             Err(e) => {
@@ -679,6 +731,8 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
 }
 
 async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSender<AppEvent>) {
+    let mut broadcast_index: i64 = -1;
+
     loop {
         for schema_key in ["schema:frontend", "schema:backend"] {
             let result = Command::new("redis-cli")
@@ -749,46 +803,41 @@ async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedS
                 }
             }
 
-            // Poll message queue via CLI (both id-based and role-based keys)
-            let msg_keys = vec![
-                format!("msg:{}", spec.id),
-                format!("msg:{}", spec.role.as_str()),
-            ];
-            for msg_key in msg_keys {
-                if let Ok(out) = Command::new("redis-cli")
-                    .args(["-u", url, "--tls", "LRANGE", &msg_key, "0", "-1"])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
-                    .await
-                {
-                    let raw_out = String::from_utf8_lossy(&out.stdout);
-                    let messages: Vec<&str> = raw_out.lines()
-                        .map(|l| l.trim())
-                        .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
-                        .filter(|l| !l.starts_with("(integer)"))
-                        .collect();
-                    if !messages.is_empty() {
-                        let _ = Command::new("redis-cli")
-                            .args(["-u", url, "--tls", "DEL", &msg_key])
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .output()
-                            .await;
-                        for raw in messages {
-                            let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
-                                .and_then(|s| s.strip_prefix(") "))
-                                .unwrap_or(raw)
-                                .trim_matches('"');
-                            let (from, body) = cleaned.split_once('|')
-                                .map(|(f, b)| (f.to_string(), b.to_string()))
-                                .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
-                            let _ = tx.send(AppEvent::AgentMessage {
-                                from,
-                                to: spec.id.clone(),
-                                body,
-                            });
-                        }
+            // Poll message queue via CLI for this specific agent
+            let msg_key = format!("msg:{}", spec.id);
+            if let Ok(out) = Command::new("redis-cli")
+                .args(["-u", url, "--tls", "LRANGE", &msg_key, "0", "-1"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+            {
+                let raw_out = String::from_utf8_lossy(&out.stdout);
+                let messages: Vec<&str> = raw_out.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
+                    .filter(|l| !l.starts_with("(integer)"))
+                    .collect();
+                if !messages.is_empty() {
+                    let _ = Command::new("redis-cli")
+                        .args(["-u", url, "--tls", "DEL", &msg_key])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .output()
+                        .await;
+                    for raw in messages {
+                        let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
+                            .and_then(|s| s.strip_prefix(") "))
+                            .unwrap_or(raw)
+                            .trim_matches('"');
+                        let (from, body) = cleaned.split_once('|')
+                            .map(|(f, b)| (f.to_string(), b.to_string()))
+                            .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
+                        let _ = tx.send(AppEvent::AgentMessage {
+                            from,
+                            to: spec.id.clone(),
+                            body,
+                        });
                     }
                 }
             }
@@ -864,6 +913,38 @@ async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedS
                     }
                 }
             }
+        }
+
+        // Poll broadcast log via CLI (swarm:broadcast-log) — read-only, use index tracking
+        if let Ok(out) = Command::new("redis-cli")
+            .args(["-u", url, "--tls", "LRANGE", "swarm:broadcast-log", "0", "-1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+        {
+            let raw_out = String::from_utf8_lossy(&out.stdout);
+            let entries: Vec<&str> = raw_out.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
+                .filter(|l| !l.starts_with("(integer)"))
+                .collect();
+            let total = entries.len() as i64;
+            let new_start = if broadcast_index < 0 { 0 } else { broadcast_index as usize };
+            if total as usize > new_start {
+                let new_count = total as usize - new_start;
+                for raw in entries.iter().take(new_count).rev() {
+                    let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
+                        .and_then(|s| s.strip_prefix(") "))
+                        .unwrap_or(raw)
+                        .trim_matches('"');
+                    let (from, body) = cleaned.split_once('|')
+                        .map(|(f, b)| (f.to_string(), b.to_string()))
+                        .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
+                    let _ = tx.send(AppEvent::BroadcastMessage { from, body });
+                }
+            }
+            broadcast_index = total;
         }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1261,6 +1342,19 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
 }
 
 fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let messages_label = if app.unread_messages > 0 && app.active_tab != ViewTab::Messages {
+        format!(" {} ({}) 🔔{} ", ViewTab::Messages.label(), app.messages.len(), app.unread_messages)
+    } else {
+        format!(" {} ({}) ", ViewTab::Messages.label(), app.messages.len())
+    };
+    let messages_style = if app.active_tab == ViewTab::Messages {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else if app.unread_messages > 0 {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
     let tab_spans: Vec<Span> = vec![
         Span::styled(" ", Style::default()),
         Span::styled(
@@ -1272,14 +1366,7 @@ fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
             },
         ),
         Span::styled("  │  ", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled(
-            format!(" {} ({}) ", ViewTab::Messages.label(), app.messages.len()),
-            if app.active_tab == ViewTab::Messages {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            },
-        ),
+        Span::styled(messages_label, messages_style),
         Span::styled("    ", Style::default()),
         Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::styled(" switch view", Style::default().fg(Color::DarkGray)),
@@ -2326,12 +2413,16 @@ async fn main() -> Result<()> {
                                     ViewTab::Logs => ViewTab::Messages,
                                     ViewTab::Messages => ViewTab::Logs,
                                 };
+                                if app.active_tab == ViewTab::Messages {
+                                    app.unread_messages = 0;
+                                }
                             }
                             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 app.composing = true;
                                 app.compose_input.clear();
                                 app.compose_cursor = 0;
                                 app.active_tab = ViewTab::Messages;
+                                app.unread_messages = 0;
                             }
                             KeyCode::Char(ch) if !app.launched => {
                                 app.task_input.insert(app.cursor_pos, ch);

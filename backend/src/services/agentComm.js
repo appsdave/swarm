@@ -18,6 +18,38 @@ const AGENT_KEYS = {
   inbox: (id) => `msg:${id}`,
 };
 
+// ─── Notification helper ────────────────────────────────────────────
+
+const NOTIF_KEY = "swarm:notifications";
+const MAX_NOTIFICATIONS = 200;
+
+/**
+ * Push a notification to the persistent notification list and emit an SSE event.
+ * Called internally when messages are sent, broadcasts occur, or agents change status.
+ */
+async function pushNotification(redis, { type, agentId, message }) {
+  const notif = {
+    id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: type || "info",
+    agentId: agentId || null,
+    message: message || "",
+    timestamp: new Date().toISOString(),
+    read: false,
+  };
+  await redis.lpush(NOTIF_KEY, JSON.stringify(notif));
+  await redis.ltrim(NOTIF_KEY, 0, MAX_NOTIFICATIONS - 1);
+
+  // Fire SSE event for real-time delivery
+  broadcastSSE("agent-event", {
+    agentId: notif.agentId || "system",
+    type: "notification",
+    payload: { id: notif.id, type: notif.type, message: notif.message },
+    timestamp: notif.timestamp,
+  });
+
+  return notif;
+}
+
 // ─── Event listeners for SSE ────────────────────────────────────────
 
 const sseClients = new Set();
@@ -90,6 +122,13 @@ export async function broadcastMessage(fromAgent, text) {
   // Also push via pub/sub for real-time delivery
   await pub.publish(CHANNEL_BROADCAST, JSON.stringify(msg));
 
+  // Auto-generate a notification for the broadcast
+  await pushNotification(redis, {
+    type: "broadcast",
+    agentId: fromAgent,
+    message: `Broadcast from ${fromAgent}: ${text}`,
+  });
+
   return msg;
 }
 
@@ -132,6 +171,16 @@ export async function setAgentStatus(agentId, status, task) {
   await pipeline.exec();
 
   await publishAgentEvent(agentId, "status-change", { status, task });
+
+  // Auto-generate notifications for notable status changes
+  if (status === "blocked" || status === "error" || status === "done") {
+    await pushNotification(redis, {
+      type: "status",
+      agentId,
+      message: `Agent ${agentId} is now ${status}${task ? `: ${task}` : ""}`,
+    });
+  }
+
   return { agentId, status, task };
 }
 
@@ -148,6 +197,13 @@ export async function sendMessage(fromAgent, toAgent, text) {
   await publishAgentEvent(fromAgent, "message-sent", {
     to: toAgent,
     text,
+  });
+
+  // Auto-generate a notification for the recipient
+  await pushNotification(redis, {
+    type: "message",
+    agentId: toAgent,
+    message: `New message from ${fromAgent}: ${text}`,
   });
 
   return { from: fromAgent, to: toAgent, text, timestamp: new Date().toISOString() };

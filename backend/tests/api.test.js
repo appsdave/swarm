@@ -50,6 +50,7 @@ const TEST_KEYS = [
   "agent:test-agent-2:last_poll",
   "request:test-agent-2:needs",
   "request:test-agent-2:offers",
+  "swarm:notifications",
 ];
 
 let server;
@@ -230,6 +231,99 @@ describe("Schemas API", () => {
   it("PUT rejects missing schema field", async () => {
     const res = await request(server, "PUT", "/api/schemas/test-agent-1", {});
     assert.equal(res.status, 400);
+  });
+});
+
+// ─── Notifications ──────────────────────────────────────────────────
+
+describe("Notifications API", () => {
+  it("POST /api/notifications creates and GET retrieves", async () => {
+    const postRes = await request(server, "POST", "/api/notifications", {
+      type: "info",
+      agentId: "test-agent-1",
+      message: "Test notification",
+    });
+    assert.equal(postRes.status, 201);
+    assert.ok(postRes.body.id);
+    assert.equal(postRes.body.type, "info");
+    assert.equal(postRes.body.message, "Test notification");
+    assert.equal(postRes.body.read, false);
+
+    const getRes = await request(server, "GET", "/api/notifications");
+    assert.equal(getRes.status, 200);
+    assert.ok(Array.isArray(getRes.body));
+    const found = getRes.body.find((n) => n.message === "Test notification");
+    assert.ok(found);
+  });
+
+  it("POST /api/notifications rejects missing message", async () => {
+    const res = await request(server, "POST", "/api/notifications", {
+      type: "info",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("PATCH /api/notifications/:id/read marks as read", async () => {
+    const postRes = await request(server, "POST", "/api/notifications", {
+      message: "To be read",
+    });
+    const id = postRes.body.id;
+
+    const patchRes = await request(server, "PATCH", `/api/notifications/${id}/read`);
+    assert.equal(patchRes.status, 200);
+    assert.equal(patchRes.body.read, true);
+
+    // Verify it's actually marked as read
+    const getRes = await request(server, "GET", "/api/notifications?unread=true");
+    const found = getRes.body.find((n) => n.id === id);
+    assert.equal(found, undefined);
+  });
+
+  it("PATCH /api/notifications/:id/read returns 404 for unknown id", async () => {
+    const res = await request(server, "PATCH", "/api/notifications/nonexistent/read");
+    assert.equal(res.status, 404);
+  });
+
+  it("POST /api/notifications/read-all marks all as read", async () => {
+    await request(server, "POST", "/api/notifications", { message: "n1" });
+    await request(server, "POST", "/api/notifications", { message: "n2" });
+
+    const res = await request(server, "POST", "/api/notifications/read-all");
+    assert.equal(res.status, 200);
+    assert.ok(res.body.marked >= 2);
+
+    const getRes = await request(server, "GET", "/api/notifications?unread=true");
+    assert.equal(getRes.body.length, 0);
+  });
+
+  it("sending a message auto-generates a notification", async () => {
+    // Clear notifications first
+    const redis = getClient();
+    await redis.del("swarm:notifications");
+
+    await request(server, "POST", "/api/messages", {
+      from: "test-agent-1",
+      to: "test-agent-2",
+      text: "Trigger notif",
+    });
+
+    const getRes = await request(server, "GET", "/api/notifications");
+    const found = getRes.body.find((n) => n.type === "message" && n.message.includes("Trigger notif"));
+    assert.ok(found, "Expected a message notification to be auto-generated");
+  });
+
+  it("broadcasting auto-generates a notification", async () => {
+    const redis = getClient();
+    await redis.del("swarm:notifications");
+
+    await request(server, "POST", "/api/messages/broadcast", {
+      from: "test-agent-1",
+      text: "Broadcast notif test",
+    });
+
+    const getRes = await request(server, "GET", "/api/notifications");
+    const found = getRes.body.find((n) => n.type === "broadcast" && n.message.includes("Broadcast notif test"));
+    assert.ok(found, "Expected a broadcast notification to be auto-generated");
   });
 });
 
