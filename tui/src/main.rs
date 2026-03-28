@@ -852,12 +852,29 @@ async fn clear_swarm_redis_state(
 }
 
 fn draw(f: &mut ratatui::Frame, app: &App) {
+    // Calculate the dynamic height for the task input box.
+    // Inner width = total width minus 2 for the block borders.
+    let available_width = f.area().width.saturating_sub(2) as usize;
+    let task_input_height = if available_width == 0 {
+        3
+    } else {
+        let display_text = if app.task_input.trim().is_empty() {
+            "Type the next one-off swarm task here..."
+        } else {
+            app.task_input.as_str()
+        };
+        let text_lines = (display_text.len() + available_width - 1) / available_width;
+        // min 3 (1 visible line + borders), max 10 (8 visible lines + borders)
+        (text_lines as u16 + 2).clamp(3, 10)
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(10),
             Constraint::Min(10),
             Constraint::Length(12),
+            Constraint::Length(task_input_height),
             Constraint::Length(3),
         ])
         .split(f.area());
@@ -1024,11 +1041,18 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
     } else if total_wrapped_lines > inner_height {
         // If cursor is in view from top, keep it there; otherwise scroll to end
         0
+    // Calculate scroll offset so the cursor (end of text) is always visible.
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let scroll_offset = if inner_width > 0 && inner_height > 0 {
+        let total_lines = (prompt.len() + inner_width - 1) / inner_width;
+        total_lines.saturating_sub(inner_height) as u16
     } else {
         0
     };
 
     let paragraph = Paragraph::new(display_text)
+    let paragraph = Paragraph::new(prompt)
         .style(style)
         .block(
             Block::default()
