@@ -2545,12 +2545,33 @@ async fn main() -> Result<()> {
             }
             "-u" | "--update" => {
                 println!("🔄 Updating swarm...");
+                // Stash any local changes so pull doesn't fail
+                let stash_status = std::process::Command::new("git")
+                    .args(["stash", "--include-untracked"])
+                    .current_dir(&project_root)
+                    .status()?;
+                let stashed = stash_status.success();
+
                 let status = std::process::Command::new("git")
                     .args(["pull", "--rebase", "origin", "main"])
                     .current_dir(&project_root)
                     .status()?;
                 if !status.success() {
+                    // Restore stash even on failure
+                    if stashed {
+                        let _ = std::process::Command::new("git")
+                            .args(["stash", "pop"])
+                            .current_dir(&project_root)
+                            .status();
+                    }
                     anyhow::bail!("git pull failed");
+                }
+                // Restore stashed changes
+                if stashed {
+                    let _ = std::process::Command::new("git")
+                        .args(["stash", "pop"])
+                        .current_dir(&project_root)
+                        .status();
                 }
                 println!("📦 Building release...");
                 let status = std::process::Command::new("cargo")
