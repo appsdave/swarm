@@ -2,5 +2,9 @@ node_modules/
 *.db
 *.sqlite
 .env.local
+.env
 coverage/
 dist/
+tui/target/
+.output.txt
+.swarm/
