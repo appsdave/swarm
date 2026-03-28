@@ -17,7 +17,7 @@ if [ -z "${SWARM_REDIS_URL:-}" ]; then
 fi
 
 echo "🚀 Launching Agent Swarm..."
-echo "   Redis: $SWARM_REDIS_URL"
+echo "   Redis: configured via SWARM_REDIS_URL"
 echo ""
 
 # Launch Agent B (Backend) — starts first so schema is published early
@@ -39,7 +39,7 @@ echo "✅ Swarm launched!"
 echo "   Agent A (Frontend) PID: $PID_FRONTEND"
 echo "   Agent B (Backend)  PID: $PID_BACKEND"
 echo ""
-echo "Monitor with: redis-cli -u \$SWARM_REDIS_URL MGET agent:frontend:status agent:backend:status"
+echo "Monitor with: redis-cli -u \$SWARM_REDIS_URL MGET agent:frontend:status agent:frontend:task agent:backend:status agent:backend:task"
 echo "Stop with:    kill $PID_FRONTEND $PID_BACKEND"
 
 # Wait for both agents
