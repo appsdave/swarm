@@ -1,0 +1,33 @@
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.input-group__label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.input-group__field {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.input-group__field:focus {
+  border-color: var(--color-primary);
+}
+
+.input-group__field--error {
+  border-color: var(--color-danger);
+}
+
+.input-group__error {
+  font-size: 0.75rem;
+  color: var(--color-danger);
+}
