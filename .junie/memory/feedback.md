@@ -90,7 +90,7 @@
 {
     "TYPE": "correction",
     "CATEGORY": "misunderstood intent",
-    "EXPECTATION": "User wants the assistant to inspect local worktrees for uncommitted and unpushed changes since agents didn't commit, push, or open PRs.",
+    "EXPECTATION": "User wants the assistant to inspect local worktrees for uncommitted and unpushed changes since agents didn’t commit, push, or open PRs.",
     "NEW INSTRUCTION": "WHEN user asks to check local worktrees for changes THEN provide exact git commands to list untracked, staged, and unpushed changes per worktree"
 }
 
@@ -141,3 +141,4 @@
     "EXPECTATION": "User expected the TUI to successfully send prompts without a 404 error.",
     "NEW INSTRUCTION": "WHEN TUI shows 'Request failed: 404' on prompt send THEN show steps to verify API endpoint, fix URL in config, ensure server running, and retest with curl"
 }
+
