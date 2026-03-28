@@ -42,21 +42,28 @@ ambition/
 ├── package.json               # npm scripts for building and launching
 ├── tui/                       # Rust TUI application (Ratatui + Tokio)
 │   ├── Cargo.toml
+│   ├── Cargo.lock
+│   ├── runtime-prompts/       # Agent prompt templates injected at launch
+│   │   ├── frontend-1.md
+│   │   └── backend-1.md
 │   └── src/main.rs
 ├── backend/                   # Node.js Express API server
 │   ├── package.json
-│   └── src/
-│       ├── app.js             # Express app setup
-│       ├── server.js          # Server entry point
-│       ├── routes/            # API route handlers
-│       │   ├── agents.js      # Agent status endpoints
-│       │   ├── events.js      # SSE event stream
-│       │   ├── messages.js    # Inter-agent messaging
-│       │   ├── negotiation.js # Request/offer negotiation
-│       │   └── schemas.js     # Schema publishing/retrieval
-│       └── services/
-│           ├── redis.js       # Redis client wrapper
-│           └── agentComm.js   # Agent communication helpers
+│   ├── README.md              # Backend-specific documentation
+│   ├── src/
+│   │   ├── app.js             # Express app setup
+│   │   ├── server.js          # Server entry point
+│   │   ├── routes/            # API route handlers
+│   │   │   ├── agents.js      # Agent status endpoints
+│   │   │   ├── events.js      # SSE event stream
+│   │   │   ├── messages.js    # Inter-agent messaging
+│   │   │   ├── negotiation.js # Request/offer negotiation
+│   │   │   └── schemas.js     # Schema publishing/retrieval
+│   │   └── services/
+│   │       ├── redis.js       # Redis client wrapper
+│   │       └── agentComm.js   # Agent communication helpers
+│   └── tests/
+│       └── api.test.js        # Integration tests (Node built-in test runner)
 ├── prompts/                   # Agent system-prompt templates
 │   ├── agent-frontend.md
 │   └── agent-backend.md
@@ -117,7 +124,7 @@ Messages follow the format `<sender-id>|<message text>`. Each agent checks its i
 - **Git** (with worktree support, i.e. Git ≥ 2.5)
 - **Rust toolchain** (`rustup` + `cargo`) — to build the TUI
 - **Junie CLI** — install and authenticate per JetBrains docs
-- **Node.js** (≥ 18) — for the backend API server
+- **Node.js** (≥ 20) — for the backend API server
 - **redis-cli** (optional, for debugging) — `sudo apt install redis-tools` or `brew install redis`
 
 ### Step 1 — Redis Instance
@@ -323,9 +330,9 @@ The root `package.json` provides convenience scripts:
 
 ```bash
 npm run build          # Build the Rust TUI (cargo build --release)
-npm run start          # Launch the TUI via the swarm wrapper
-npm run setup          # Create git worktrees
-npm run install-global # Install swarm globally to ~/.swarm
+npm run start          # Launch the TUI (cargo run --release)
+npm run dev            # Launch the TUI in dev mode (cargo run)
+npm run launch         # Launch the shell-based swarm runner
 ```
 
 ## Post-Agent Commit Script
