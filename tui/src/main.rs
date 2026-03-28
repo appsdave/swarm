@@ -2320,15 +2320,25 @@ async fn main() -> Result<()> {
                     .join("repo");
 
                 if repo_dir.join(".git").exists() {
-                    println!("📥 Pulling latest changes in {}...", repo_dir.display());
-                    let pull = std::process::Command::new("git")
-                        .args(["pull", "--rebase"])
+                    println!("📥 Fetching latest from git...");
+                    let fetch = std::process::Command::new("git")
+                        .args(["fetch", "origin", "main"])
                         .current_dir(&repo_dir)
                         .status();
-                    match pull {
-                        Ok(s) if s.success() => {}
+                    match fetch {
+                        Ok(s) if s.success() => {
+                            println!("📥 Resetting to latest origin/main...");
+                            let reset = std::process::Command::new("git")
+                                .args(["reset", "--hard", "origin/main"])
+                                .current_dir(&repo_dir)
+                                .status();
+                            if !reset.map(|s| s.success()).unwrap_or(false) {
+                                println!("⚠️  Reset failed, re-cloning...");
+                                let _ = std::fs::remove_dir_all(&repo_dir);
+                            }
+                        }
                         _ => {
-                            println!("⚠️  Pull failed, re-cloning...");
+                            println!("⚠️  Fetch failed, re-cloning...");
                             let _ = std::fs::remove_dir_all(&repo_dir);
                         }
                     }
@@ -2340,8 +2350,6 @@ async fn main() -> Result<()> {
                     let clone = std::process::Command::new("git")
                         .args([
                             "clone",
-                            "--depth",
-                            "1",
                             "https://github.com/appsdave/swarm.git",
                             repo_dir.to_str().unwrap(),
                         ])

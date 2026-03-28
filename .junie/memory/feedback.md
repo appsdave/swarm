@@ -214,3 +214,19 @@
     "NEW INSTRUCTION": "WHEN suggesting dashboards or control planes THEN propose in-TUI features and avoid web UI"
 }
 
+[2026-03-28 23:15] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "overcomplicated merge",
+    "EXPECTATION": "User wants the tabs/messages merged simply without adding new complex structures or background tasks, and to restore the previous commands/keybinds.",
+    "NEW INSTRUCTION": "WHEN asked to 'just merge tabs/messages' THEN minimally merge labels; keep Tab/'v' and CLI -h -v -u"
+}
+
+[2026-03-28 23:44] - Updated by Junie
+{
+    "TYPE": "correction",
+    "CATEGORY": "update behavior path",
+    "EXPECTATION": "User expects the update to run a git pull in their working repo (/home/balls/ambition), not only in ~/.swarm/repo.",
+    "NEW INSTRUCTION": "WHEN user runs swarm -u THEN run git pull --rebase in CWD and in ~/.swarm/repo"
+}
+
