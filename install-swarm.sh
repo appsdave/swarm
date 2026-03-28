@@ -51,6 +51,9 @@ install -m 0755 "$REPO_ROOT/launch-swarm.sh" "$INSTALL_DIR/launch-swarm.sh"
 rm -rf "$INSTALL_DIR/prompts"
 cp -R "$REPO_ROOT/prompts" "$INSTALL_DIR/prompts"
 
+# Remember source repo location for `swarm update`
+echo "$REPO_ROOT" >"$SWARM_HOME/src_root"
+
 cat >"$BIN_DIR/swarm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -68,6 +71,24 @@ fi
 
 command_name="${1:-tui}"
 case "$command_name" in
+  update|-u)
+    shift || true
+    SRC_ROOT_FILE="$SWARM_HOME/src_root"
+    if [ -f "$SRC_ROOT_FILE" ]; then
+      SRC_ROOT="$(cat "$SRC_ROOT_FILE")"
+    else
+      SRC_ROOT=""
+    fi
+    if [ -z "$SRC_ROOT" ] || [ ! -d "$SRC_ROOT/.git" ]; then
+      echo "❌ Cannot find swarm source repo." >&2
+      echo "   Re-run install-swarm.sh from the source checkout first." >&2
+      exit 1
+    fi
+    echo "📥 Pulling latest changes in $SRC_ROOT..."
+    git -C "$SRC_ROOT" pull --ff-only
+    echo "⚙️  Re-installing swarm..."
+    exec bash "$SRC_ROOT/install-swarm.sh"
+    ;;
   tui)
     shift || true
     export SWARM_PROJECT_ROOT="$PROJECT_ROOT"
@@ -124,3 +145,4 @@ echo '  cd /path/to/any/git/project && swarm setup --redis-url "rediss://..."'
 echo '  cd /path/to/any/git/project && swarm'
 echo '  cd /path/to/any/git/project && swarm run "Update the docs and setup scripts"'
 echo '  cd /path/to/any/git/project && swarm shell'
+echo '  swarm update          # or: swarm -u'
