@@ -2546,6 +2546,38 @@ async fn main() -> Result<()> {
     let backend_url = std::env::var("SWARM_BACKEND_URL")
         .unwrap_or_else(|_| "http://localhost:3001".into());
     app.backend_url = backend_url.clone();
+
+    // Auto-start the backend server if it's not already running on localhost
+    let _backend_child = if backend_url.contains("localhost") || backend_url.contains("127.0.0.1") {
+        let check = reqwest::Client::new()
+            .get(format!("{backend_url}/api/health"))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await;
+        if check.is_ok() {
+            None // already running
+        } else {
+            // Find the backend server.js relative to project root
+            let server_js = project_root.join("worktree-backend/backend/src/server.js");
+            if server_js.is_file() {
+                match std::process::Command::new("node")
+                    .arg(&server_js)
+                    .env("SWARM_REDIS_URL", std::env::var("SWARM_REDIS_URL").unwrap_or_default())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => Some(child),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let tx_backend = tx.clone();
     let backend_url_clone = backend_url.clone();
     tokio::spawn(async move { backend_poller(backend_url_clone, tx_backend).await });
@@ -2756,6 +2788,12 @@ async fn main() -> Result<()> {
         if app.quit {
             break;
         }
+    }
+
+    // Kill the auto-started backend server if we spawned it
+    if let Some(mut child) = _backend_child {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     disable_raw_mode()?;
