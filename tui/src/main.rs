@@ -1163,25 +1163,57 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let launch_msg = if !app.launched {
-        "[Enter] Launch"
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::DarkGray);
+    let sep_style = Style::default().fg(Color::Rgb(60, 60, 60));
+    let sep = Span::styled("  │  ", sep_style);
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+
+    if !app.launched {
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Launch swarm", desc_style));
     } else {
-        "[Enter] Relaunch after exit"
-    };
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Relaunch", desc_style));
+    }
 
-    let redis = app
-        .redis_error
-        .as_deref()
-        .map(|e| format!(" | redis: {e}"))
-        .unwrap_or_default();
-    let text = format!(
-        " {launch_msg} | [q] Quit | [Backspace] Edit | Logs & Redis reset each run{}",
-        redis
-    );
+    spans.push(sep.clone());
+    spans.push(Span::styled("q", key_style));
+    spans.push(Span::styled("/", desc_style));
+    spans.push(Span::styled("Esc", key_style));
+    spans.push(Span::styled(" Quit", desc_style));
 
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::DarkGray))
-        .wrap(Wrap { trim: true });
+    if !app.launched {
+        spans.push(sep.clone());
+        spans.push(Span::styled("←→", key_style));
+        spans.push(Span::styled(" Move cursor", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Home", key_style));
+        spans.push(Span::styled("/", desc_style));
+        spans.push(Span::styled("End", key_style));
+        spans.push(Span::styled(" Jump to start/end", desc_style));
+    }
+
+    spans.push(sep.clone());
+    spans.push(Span::styled(
+        "Logs & Redis state reset on each launch",
+        Style::default().fg(Color::Rgb(80, 80, 80)),
+    ));
+
+    if let Some(err) = &app.redis_error {
+        spans.push(sep.clone());
+        spans.push(Span::styled(
+            format!("⚠ Redis: {err}"),
+            Style::default().fg(Color::Red),
+        ));
+    }
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 }
 
