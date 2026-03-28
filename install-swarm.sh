@@ -71,6 +71,25 @@ fi
 
 command_name="${1:-tui}"
 case "$command_name" in
+  help|--help|-h)
+    echo "Usage: swarm [command] [options]"
+    echo ""
+    echo "Commands:"
+    echo "  tui            Launch the interactive TUI (default)"
+    echo "  run <task>     Launch the TUI with a task prompt"
+    echo "  shell          Launch the shell-based swarm runner"
+    echo "  setup          Set up Git worktrees for the current project"
+    echo "  update, -u     Pull latest source and re-install"
+    echo "  help, --help   Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  swarm                              # start the TUI"
+    echo "  swarm run \"Build a todo app\"       # start with a task"
+    echo "  swarm setup                        # create worktrees"
+    echo "  swarm setup --redis-url \"rediss://...\"  # setup with Redis URL"
+    echo "  swarm update                       # self-update"
+    exit 0
+    ;;
   update|-u)
     shift || true
     SRC_ROOT_FILE="$SWARM_HOME/src_root"
