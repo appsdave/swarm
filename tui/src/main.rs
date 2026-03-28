@@ -685,6 +685,72 @@ async fn spawn_agent(
         }
     };
 
+    // --- Post-completion: auto commit, push, and create PR ---
+    {
+        let branch = format!("agent/{}", spec.role.as_str());
+        let label = spec.role.as_str().to_string();
+        let worktree = spec.worktree.clone();
+
+        // Look for post-agent-commit.sh relative to the project root
+        let project_root = worktree.parent().unwrap_or(&worktree);
+        let script = project_root.join("scripts/post-agent-commit.sh");
+
+        if script.exists() {
+            send_log(format!("📦 Running post-completion commit/push/PR for {}...", label));
+            match Command::new("bash")
+                .args([
+                    script.to_str().unwrap_or("scripts/post-agent-commit.sh"),
+                    worktree.to_str().unwrap_or("."),
+                    &branch,
+                    &label,
+                ])
+                .current_dir(&worktree)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(mut post_child) => {
+                    // Stream post-commit output to the TUI log pane
+                    if let Some(stdout) = post_child.stdout.take() {
+                        let tx3 = tx.clone();
+                        let aid = spec.id.clone();
+                        tokio::spawn(async move {
+                            let mut reader = BufReader::new(stdout).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                let _ = tx3.send(AppEvent::Log {
+                                    agent_id: aid.clone(),
+                                    line: sanitize_log_line(&line),
+                                });
+                            }
+                        });
+                    }
+                    if let Some(stderr) = post_child.stderr.take() {
+                        let tx3 = tx.clone();
+                        let aid = spec.id.clone();
+                        tokio::spawn(async move {
+                            let mut reader = BufReader::new(stderr).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                let _ = tx3.send(AppEvent::Log {
+                                    agent_id: aid.clone(),
+                                    line: format!("[post-commit] {}", sanitize_log_line(&line)),
+                                });
+                            }
+                        });
+                    }
+                    match post_child.wait().await {
+                        Ok(s) => send_log(format!("📦 Post-completion finished (exit {})", s.code().unwrap_or(-1))),
+                        Err(e) => send_log(format!("⚠️ Post-completion error: {e}")),
+                    }
+                }
+                Err(e) => {
+                    send_log(format!("⚠️ Failed to run post-commit script: {e}"));
+                }
+            }
+        } else {
+            send_log(format!("⚠️ Post-commit script not found at {}", script.display()));
+        }
+    }
+
     let _ = tx.send(AppEvent::AgentExited {
         agent_id: spec.id,
         code,

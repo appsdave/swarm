@@ -8,6 +8,12 @@ if [ ! -d "$PROMPT_ROOT" ]; then
   PROMPT_ROOT="$INSTALL_HOME/prompts"
 fi
 
+SCRIPTS_DIR="$PROJECT_ROOT/scripts"
+if [ ! -d "$SCRIPTS_DIR" ]; then
+  SCRIPTS_DIR="$INSTALL_HOME/scripts"
+fi
+POST_COMMIT_SCRIPT="$SCRIPTS_DIR/post-agent-commit.sh"
+
 LOG_DIR="$PROJECT_ROOT/.swarm-logs"
 mkdir -p "$LOG_DIR"
 
@@ -101,16 +107,28 @@ redis_del \
 
 # Launch Agent B (Backend) — starts first so schema is published early
 echo "🔧 Starting Agent B (Backend)..."
-cd "$PROJECT_ROOT/worktree-backend"
-junie --task "$(<"$PROMPT_ROOT/agent-backend.md")" --project . >"$LOG_DIR/agent-backend.log" 2>&1 &
+(
+  cd "$PROJECT_ROOT/worktree-backend"
+  junie --task "$(<"$PROMPT_ROOT/agent-backend.md")" --project . >>"$LOG_DIR/agent-backend.log" 2>&1
+  echo "📦 Agent B exited — running post-completion commit/push/PR..."
+  if [ -x "$POST_COMMIT_SCRIPT" ]; then
+    bash "$POST_COMMIT_SCRIPT" "$PROJECT_ROOT/worktree-backend" "agent/backend" "backend" >>"$LOG_DIR/agent-backend.log" 2>&1
+  fi
+) &
 PID_BACKEND=$!
 echo "   PID: $PID_BACKEND"
 echo "   Log: $LOG_DIR/agent-backend.log"
 
 # Launch Agent A (Frontend)
 echo "🎨 Starting Agent A (Frontend)..."
-cd "$PROJECT_ROOT/worktree-frontend"
-junie --task "$(<"$PROMPT_ROOT/agent-frontend.md")" --project . >"$LOG_DIR/agent-frontend.log" 2>&1 &
+(
+  cd "$PROJECT_ROOT/worktree-frontend"
+  junie --task "$(<"$PROMPT_ROOT/agent-frontend.md")" --project . >>"$LOG_DIR/agent-frontend.log" 2>&1
+  echo "📦 Agent A exited — running post-completion commit/push/PR..."
+  if [ -x "$POST_COMMIT_SCRIPT" ]; then
+    bash "$POST_COMMIT_SCRIPT" "$PROJECT_ROOT/worktree-frontend" "agent/frontend" "frontend" >>"$LOG_DIR/agent-frontend.log" 2>&1
+  fi
+) &
 PID_FRONTEND=$!
 echo "   PID: $PID_FRONTEND"
 echo "   Log: $LOG_DIR/agent-frontend.log"
