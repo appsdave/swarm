@@ -275,7 +275,11 @@ impl App {
             } => {
                 let mut updates = Vec::new();
                 if let Some(agent) = self.agents.get_mut(&agent_id) {
-                    if agent.raw_status.as_deref() != Some(status_raw.as_str()) {
+                    // Don't let Redis overwrite the status of an agent that already exited
+                    if agent.exit_code.is_some() {
+                        // still track raw_status for the all_agents_done_in_redis check
+                        agent.raw_status = Some(status_raw.clone());
+                    } else if agent.raw_status.as_deref() != Some(status_raw.as_str()) {
                         agent.raw_status = Some(status_raw.clone());
                         agent.status = status_icon(&status_raw);
                         updates.push(format!("redis status -> {}", agent.status));
