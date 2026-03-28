@@ -2385,7 +2385,37 @@ async fn main() -> Result<()> {
                     use std::os::unix::fs::PermissionsExt;
                     std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755))?;
                 }
+                // Ensure ~/.swarm/bin is in PATH in shell profiles
+                let swarm_bin = dst_dir.to_str().unwrap_or("$HOME/.swarm/bin").to_string();
+                let path_line = format!("export PATH=\"{}:$PATH\"", swarm_bin);
+                let env_line = "[ -f \"$HOME/.swarm/env\" ] && . \"$HOME/.swarm/env\"";
+                for rc in &[
+                    format!("{}/.bashrc", home),
+                    format!("{}/.zshrc", home),
+                ] {
+                    let content = std::fs::read_to_string(rc).unwrap_or_default();
+                    let mut additions = String::new();
+                    if !content.contains(".swarm/bin") {
+                        additions.push_str(&format!("\n{}\n", path_line));
+                    }
+                    if !content.contains(".swarm/env") {
+                        additions.push_str(&format!("{}\n", env_line));
+                    }
+                    if !additions.is_empty() {
+                        let _ = std::fs::OpenOptions::new()
+                            .append(true)
+                            .create(true)
+                            .open(rc)
+                            .and_then(|mut f| {
+                                use std::io::Write;
+                                f.write_all(additions.as_bytes())
+                            });
+                    }
+                }
                 println!("✅ Updated! Installed to {}", dst.display());
+                println!("🔗 PATH includes {}", swarm_bin);
+                println!("   Run: export PATH=\"{}:$PATH\"", swarm_bin);
+                println!("   Or open a new terminal to pick up the changes.");
                 return Ok(());
             }
             _ => {} // fall through to TUI for "run", "setup", "shell", etc.
