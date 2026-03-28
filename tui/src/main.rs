@@ -2290,6 +2290,100 @@ fn render_prompt(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --- CLI flags: handle before TUI ---
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "-h" | "--help" | "help" => {
+                println!("swarm - AI agent swarm TUI\n");
+                println!("Usage: swarm [command] [options]\n");
+                println!("Commands:");
+                println!("  run <prompt>    Launch swarm with a task prompt");
+                println!("  setup           Set up project worktrees and backend");
+                println!("  shell           Open a swarm shell");
+                println!("  update          Update swarm to latest version");
+                println!("\nOptions:");
+                println!("  -h, --help      Show this help");
+                println!("  -v, --version   Show version");
+                println!("  -u, --update    Update swarm to latest version");
+                return Ok(());
+            }
+            "-v" | "--version" | "version" => {
+                println!("swarm 0.1.0");
+                return Ok(());
+            }
+            "-u" | "--update" | "update" => {
+                println!("🔄 Updating swarm...");
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                let repo_dir = std::path::PathBuf::from(&home)
+                    .join(".swarm")
+                    .join("repo");
+
+                if repo_dir.join(".git").exists() {
+                    println!("📥 Pulling latest changes in {}...", repo_dir.display());
+                    let pull = std::process::Command::new("git")
+                        .args(["pull", "--rebase"])
+                        .current_dir(&repo_dir)
+                        .status();
+                    match pull {
+                        Ok(s) if s.success() => {}
+                        _ => {
+                            println!("⚠️  Pull failed, re-cloning...");
+                            let _ = std::fs::remove_dir_all(&repo_dir);
+                        }
+                    }
+                }
+
+                if !repo_dir.join(".git").exists() {
+                    println!("📦 Cloning repository to {}...", repo_dir.display());
+                    let _ = std::fs::create_dir_all(repo_dir.parent().unwrap());
+                    let clone = std::process::Command::new("git")
+                        .args([
+                            "clone",
+                            "--depth",
+                            "1",
+                            "https://github.com/appsdave/swarm.git",
+                            repo_dir.to_str().unwrap(),
+                        ])
+                        .status();
+                    if !clone.map(|s| s.success()).unwrap_or(false) {
+                        eprintln!("Error: git clone failed");
+                        std::process::exit(1);
+                    }
+                }
+
+                println!("📦 Building release...");
+                let build = std::process::Command::new("cargo")
+                    .args(["build", "--release"])
+                    .current_dir(repo_dir.join("tui"))
+                    .status();
+                if !build.map(|s| s.success()).unwrap_or(false) {
+                    eprintln!("Error: cargo build failed");
+                    std::process::exit(1);
+                }
+
+                let src = repo_dir.join("tui/target/release/swarm-tui");
+                let dst_dir = std::path::PathBuf::from(&home)
+                    .join(".swarm")
+                    .join("bin");
+                let _ = std::fs::create_dir_all(&dst_dir);
+                let dst = dst_dir.join("swarm");
+                let tmp = dst_dir.join("swarm.new");
+                std::fs::copy(&src, &tmp)?;
+                let _ = std::fs::remove_file(&dst);
+                std::fs::rename(&tmp, &dst)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755))?;
+                }
+                println!("✅ Updated! Installed to {}", dst.display());
+                return Ok(());
+            }
+            _ => {} // fall through to TUI for "run", "setup", "shell", etc.
+        }
+    }
+
     let project_root = project_root()?;
     let task_prompt = task_prompt_from_args();
     let specs = build_agent_specs(&project_root, None)?;
