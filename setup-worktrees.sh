@@ -39,5 +39,5 @@ fi
 
 echo ""
 echo "✅ Worktrees ready:"
-echo "   Frontend → $WORKTREE_FE  (branch: $BRANCH_FE)"
-echo "   Backend  → $WORKTREE_BE  (branch: $BRANCH_BE)"
+echo "   Agent A1 / frontend-1 → $WORKTREE_FE  (branch: $BRANCH_FE, prompt: prompts/agent-frontend.md)"
+echo "   Agent B1 / backend-1  → $WORKTREE_BE  (branch: $BRANCH_BE, prompt: prompts/agent-backend.md)"
