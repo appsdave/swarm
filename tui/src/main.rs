@@ -1130,7 +1130,73 @@ fn desired_agent_split(frontend_available: usize, backend_available: usize) -> (
     (frontend, backend)
 }
 
+fn ensure_worktrees_exist(project_root: &Path) -> Result<()> {
+    let frontend = discover_worktrees(project_root, AgentRole::Frontend)?;
+    let backend = discover_worktrees(project_root, AgentRole::Backend)?;
+    if !frontend.is_empty() && !backend.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("⚙️  No worktrees found — creating them automatically...");
+
+    // Try setup-worktrees.sh from several locations
+    let candidates = [
+        project_root.join("setup-worktrees.sh"),
+        PathBuf::from(std::env::var("SWARM_HOME").unwrap_or_else(|_| {
+            format!("{}/.swarm", std::env::var("HOME").unwrap_or_default())
+        }))
+        .join("share/setup-worktrees.sh"),
+    ];
+
+    if let Some(script) = candidates.iter().find(|p| p.is_file()) {
+        let status = std::process::Command::new("bash")
+            .arg(script)
+            .current_dir(project_root)
+            .env("SWARM_PROJECT_ROOT", project_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("setup-worktrees.sh failed (exit {})", status.code().unwrap_or(-1));
+        }
+        return Ok(());
+    }
+
+    // Fallback: create worktrees inline if script not found
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(project_root)
+            .output()?
+            .stdout,
+    )?;
+    let head = head.trim();
+
+    for role in &["frontend", "backend"] {
+        let wt_dir = project_root.join(format!("worktree-{role}"));
+        if wt_dir.is_dir() {
+            continue;
+        }
+        let branch = format!("agent/{role}");
+        // Create branch if it doesn't exist
+        let _ = std::process::Command::new("git")
+            .args(["branch", &branch, head])
+            .current_dir(project_root)
+            .status();
+        let status = std::process::Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().unwrap_or("."), &branch])
+            .current_dir(project_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("Failed to create worktree for {role}");
+        }
+        eprintln!("   ✅ Created worktree-{role} (branch: {branch})");
+    }
+
+    Ok(())
+}
+
 fn build_agent_specs(project_root: &Path, task_prompt: Option<&str>) -> Result<Vec<AgentSpec>> {
+    ensure_worktrees_exist(project_root)?;
+
     let frontend_worktrees = discover_worktrees(project_root, AgentRole::Frontend)?;
     let backend_worktrees = discover_worktrees(project_root, AgentRole::Backend)?;
     let (frontend_count, backend_count) =
