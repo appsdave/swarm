@@ -577,30 +577,35 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
                         blocked,
                     });
 
-                    // Poll message queue for this agent
-                    let msg_key = format!("msg:{}", spec.id);
-                    if let Ok(messages) = redis::cmd("LRANGE")
-                        .arg(&msg_key)
-                        .arg(0i64)
-                        .arg(-1i64)
-                        .query_async::<Vec<String>>(&mut con)
-                        .await
-                    {
-                        if !messages.is_empty() {
-                            let _ = redis::cmd("DEL")
-                                .arg(&msg_key)
-                                .query_async::<u64>(&mut con)
-                                .await;
-                            for raw in messages {
-                                // Messages stored as "from_agent|body"
-                                let (from, body) = raw.split_once('|')
-                                    .map(|(f, b)| (f.to_string(), b.to_string()))
-                                    .unwrap_or_else(|| ("unknown".into(), raw.clone()));
-                                let _ = tx.send(AppEvent::AgentMessage {
-                                    from,
-                                    to: spec.id.clone(),
-                                    body,
-                                });
+                    // Poll message queue for this agent (both id-based and role-based keys)
+                    let msg_keys = vec![
+                        format!("msg:{}", spec.id),
+                        format!("msg:{}", spec.role.as_str()),
+                    ];
+                    for msg_key in msg_keys {
+                        if let Ok(messages) = redis::cmd("LRANGE")
+                            .arg(&msg_key)
+                            .arg(0i64)
+                            .arg(-1i64)
+                            .query_async::<Vec<String>>(&mut con)
+                            .await
+                        {
+                            if !messages.is_empty() {
+                                let _ = redis::cmd("DEL")
+                                    .arg(&msg_key)
+                                    .query_async::<u64>(&mut con)
+                                    .await;
+                                for raw in messages {
+                                    // Messages stored as "from_agent|body"
+                                    let (from, body) = raw.split_once('|')
+                                        .map(|(f, b)| (f.to_string(), b.to_string()))
+                                        .unwrap_or_else(|| ("unknown".into(), raw.clone()));
+                                    let _ = tx.send(AppEvent::AgentMessage {
+                                        from,
+                                        to: spec.id.clone(),
+                                        body,
+                                    });
+                                }
                             }
                         }
                     }
@@ -715,41 +720,46 @@ async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedS
                 }
             }
 
-            // Poll message queue via CLI
-            let msg_key = format!("msg:{}", spec.id);
-            if let Ok(out) = Command::new("redis-cli")
-                .args(["-u", url, "--tls", "LRANGE", &msg_key, "0", "-1"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-            {
-                let raw_out = String::from_utf8_lossy(&out.stdout);
-                let messages: Vec<&str> = raw_out.lines()
-                    .map(|l| l.trim())
-                    .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
-                    .filter(|l| !l.starts_with("(integer)"))
-                    .collect();
-                if !messages.is_empty() {
-                    let _ = Command::new("redis-cli")
-                        .args(["-u", url, "--tls", "DEL", &msg_key])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .output()
-                        .await;
-                    for raw in messages {
-                        let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
-                            .and_then(|s| s.strip_prefix(") "))
-                            .unwrap_or(raw)
-                            .trim_matches('"');
-                        let (from, body) = cleaned.split_once('|')
-                            .map(|(f, b)| (f.to_string(), b.to_string()))
-                            .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
-                        let _ = tx.send(AppEvent::AgentMessage {
-                            from,
-                            to: spec.id.clone(),
-                            body,
-                        });
+            // Poll message queue via CLI (both id-based and role-based keys)
+            let msg_keys = vec![
+                format!("msg:{}", spec.id),
+                format!("msg:{}", spec.role.as_str()),
+            ];
+            for msg_key in msg_keys {
+                if let Ok(out) = Command::new("redis-cli")
+                    .args(["-u", url, "--tls", "LRANGE", &msg_key, "0", "-1"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .output()
+                    .await
+                {
+                    let raw_out = String::from_utf8_lossy(&out.stdout);
+                    let messages: Vec<&str> = raw_out.lines()
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
+                        .filter(|l| !l.starts_with("(integer)"))
+                        .collect();
+                    if !messages.is_empty() {
+                        let _ = Command::new("redis-cli")
+                            .args(["-u", url, "--tls", "DEL", &msg_key])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .output()
+                            .await;
+                        for raw in messages {
+                            let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
+                                .and_then(|s| s.strip_prefix(") "))
+                                .unwrap_or(raw)
+                                .trim_matches('"');
+                            let (from, body) = cleaned.split_once('|')
+                                .map(|(f, b)| (f.to_string(), b.to_string()))
+                                .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
+                            let _ = tx.send(AppEvent::AgentMessage {
+                                from,
+                                to: spec.id.clone(),
+                                body,
+                            });
+                        }
                     }
                 }
             }
@@ -1090,6 +1100,7 @@ async fn clear_swarm_redis_state(
         keys.push(format!("blocked:{}", spec.id));
         keys.push(format!("request:{}:offers", spec.id));
         keys.push(format!("request:{}:needs", spec.id));
+        keys.push(format!("msg:{}", spec.id));
     }
 
     let result: Result<(), String> = if redis_url.starts_with("rediss://") {
