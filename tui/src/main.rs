@@ -152,6 +152,7 @@ struct App {
     completion_logged: bool,
     junie_path: String,
     task_input: String,
+    cursor_pos: usize,
     schema_state: HashMap<String, bool>,
 }
 
@@ -193,7 +194,8 @@ impl App {
             shutdown_requested: false,
             completion_logged: false,
             junie_path,
-            task_input: task_prompt.unwrap_or_default(),
+            task_input: task_prompt.clone().unwrap_or_default(),
+            cursor_pos: task_prompt.as_deref().unwrap_or_default().len(),
             schema_state: HashMap::new(),
         }
     }
@@ -929,12 +931,28 @@ async fn clear_swarm_redis_state(
 }
 
 fn draw(f: &mut ratatui::Frame, app: &App) {
+    // Calculate the dynamic height for the task input box.
+    // Inner width = total width minus 2 for the block borders.
+    let available_width = f.area().width.saturating_sub(2) as usize;
+    let task_input_height = if available_width == 0 {
+        3
+    } else {
+        let display_text = if app.task_input.trim().is_empty() {
+            "Type the next one-off swarm task here..."
+        } else {
+            app.task_input.as_str()
+        };
+        let text_lines = (display_text.len() + available_width - 1) / available_width;
+        // min 3 (1 visible line + borders), max 10 (8 visible lines + borders)
+        (text_lines as u16 + 2).clamp(3, 10)
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(10),
             Constraint::Min(10),
-            Constraint::Length(3),
+            Constraint::Length(task_input_height),
             Constraint::Length(3),
         ])
         .split(f.area());
@@ -1041,18 +1059,71 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
     } else {
         " Swarm Task Input "
     };
-    let prompt = if app.task_input.trim().is_empty() {
+    let is_placeholder = app.task_input.trim().is_empty();
+    let display_text = if is_placeholder {
         "Type the next one-off swarm task here..."
     } else {
         app.task_input.as_str()
     };
-    let style = if app.task_input.trim().is_empty() {
+    let style = if is_placeholder {
         Style::default().fg(Color::DarkGray)
     } else {
         Style::default().fg(Color::White)
     };
 
-    let paragraph = Paragraph::new(prompt)
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as u16;
+
+    // For the cursor: figure out which wrapped line the cursor sits on
+    let cursor_byte_pos = if is_placeholder { 0 } else { app.cursor_pos };
+    let text_up_to_cursor = &display_text[..cursor_byte_pos.min(display_text.len())];
+
+    // Count wrapped lines up to the cursor position
+    let cursor_wrapped_line = if inner_width > 0 {
+        let mut line_count: u16 = 0;
+        for logical_line in text_up_to_cursor.split('\n') {
+            let char_len = logical_line.chars().count();
+            if char_len == 0 {
+                line_count += 1;
+            } else {
+                line_count += ((char_len as f64) / (inner_width as f64)).ceil() as u16;
+            }
+        }
+        // line_count is 1-based total lines; convert to 0-based line index
+        line_count.saturating_sub(1)
+    } else {
+        0
+    };
+
+    // Count total wrapped lines for the full text
+    let total_wrapped_lines = if inner_width > 0 {
+        display_text
+            .split('\n')
+            .map(|line| {
+                let len = line.chars().count();
+                if len == 0 {
+                    1
+                } else {
+                    ((len as f64) / (inner_width as f64)).ceil() as u16
+                }
+            })
+            .sum::<u16>()
+            .max(1)
+    } else {
+        1
+    };
+
+    // Scroll so the cursor line is always visible
+    let scroll_offset = if cursor_wrapped_line >= inner_height {
+        cursor_wrapped_line - inner_height + 1
+    } else if total_wrapped_lines > inner_height {
+        // If cursor is in view from top, keep it there; otherwise scroll to end
+        0
+    } else {
+        0
+    };
+
+    let paragraph = Paragraph::new(display_text)
         .style(style)
         .block(
             Block::default()
@@ -1060,17 +1131,41 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: true })
+        .scroll((scroll_offset, 0));
 
     f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
+
+    // Place the terminal cursor at the editing position when not launched
+    if !app.launched && !is_placeholder {
+        // Calculate cursor x,y within the inner area
+        let chars_on_last_logical_line = text_up_to_cursor
+            .rsplit('\n')
+            .next()
+            .unwrap_or(text_up_to_cursor)
+            .chars()
+            .count();
+        let cursor_x = if inner_width > 0 {
+            (chars_on_last_logical_line % inner_width) as u16
+        } else {
+            0
+        };
+        let cursor_y = cursor_wrapped_line.saturating_sub(scroll_offset);
+
+        // +1 for the border on each side
+        f.set_cursor_position((
+            area.x + 1 + cursor_x,
+            area.y + 1 + cursor_y,
+        ));
+    }
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let launch_msg = if !app.launched {
-        "Type a one-off swarm task in the input box, then press [Enter] to launch or relaunch"
+        "[Enter] Launch"
     } else {
-        "Swarm running; after exit, edit the task box and press [Enter] for the next swarm"
+        "[Enter] Relaunch after exit"
     };
 
     let redis = app
@@ -1079,8 +1174,7 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .map(|e| format!(" | redis: {e}"))
         .unwrap_or_default();
     let text = format!(
-        " {launch_msg} | [q] Quit | [Backspace] edit | logs reset + Redis state cleared on each new run | junie: {}{}",
-        app.junie_path,
+        " {launch_msg} | [q] Quit | [Backspace] Edit | Logs & Redis reset each run{}",
         redis
     );
 
@@ -1454,9 +1548,45 @@ async fn main() -> Result<()> {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
-                        KeyCode::Char(ch) if !app.launched => app.task_input.push(ch),
-                        KeyCode::Backspace if !app.launched => {
-                            app.task_input.pop();
+                        KeyCode::Char(ch) if !app.launched => {
+                            app.task_input.insert(app.cursor_pos, ch);
+                            app.cursor_pos += ch.len_utf8();
+                        }
+                        KeyCode::Backspace if !app.launched && app.cursor_pos > 0 => {
+                            // Find the previous char boundary
+                            let prev = app.task_input[..app.cursor_pos]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            app.task_input.remove(prev);
+                            app.cursor_pos = prev;
+                        }
+                        KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() => {
+                            app.task_input.remove(app.cursor_pos);
+                        }
+                        KeyCode::Left if !app.launched && app.cursor_pos > 0 => {
+                            // Move cursor back one char
+                            app.cursor_pos = app.task_input[..app.cursor_pos]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                        }
+                        KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() => {
+                            // Move cursor forward one char
+                            let next = app.task_input[app.cursor_pos..]
+                                .char_indices()
+                                .nth(1)
+                                .map(|(i, _)| app.cursor_pos + i)
+                                .unwrap_or(app.task_input.len());
+                            app.cursor_pos = next;
+                        }
+                        KeyCode::Home if !app.launched => {
+                            app.cursor_pos = 0;
+                        }
+                        KeyCode::End if !app.launched => {
+                            app.cursor_pos = app.task_input.len();
                         }
                         KeyCode::Enter if !app.launched => {
                             let launch_task = app.current_task_prompt();
