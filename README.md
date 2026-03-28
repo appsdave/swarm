@@ -19,16 +19,20 @@ This project implements a self-polling, multi-agent swarm using:
 | `schema:backend` | string (JSON) | Published backend DB schema |
 | `schema:frontend` | string (JSON) | Published frontend component schema |
 | `blocked:<agent>` | string | What the agent is waiting for, e.g. `schema:backend` |
+| `request:<agent>:needs` | string | What the agent currently needs from others (free text or JSON) |
+| `request:<agent>:offers` | string | What the agent can provide or has published |
 | `project:status` | string | Overall project state: `in_progress`, `integrating`, `done` |
 | `messages:<from>:<to>` | list | Message queue between agents |
 
-## Polling Protocol
+## Polling & Negotiation Protocol
 
 1. Agent checks its own `agent:<id>:status` key on startup, sets to `running`.
-2. When blocked, agent sets `agent:<id>:status` → `blocked` and `blocked:<id>` → the key it needs.
-3. Agent enters polling loop: `sleep 60` → check Redis for the needed key → evaluate → repeat.
-4. When the needed data appears, agent sets status back to `running` and resumes work.
-5. On completion, agent sets `agent:<id>:status` → `done`.
+2. Agent publishes `request:<id>:offers` (what it can provide) and `request:<id>:needs` (what it needs from others).
+3. Agent checks `request:<other>:needs` — if it can fulfill a request, it prioritizes publishing that data immediately.
+4. When blocked, agent sets `agent:<id>:status` → `blocked` and `blocked:<id>` → the key it needs.
+5. Agent enters polling loop: `sleep 15` → check Redis for the needed key → also check `request:<other>:needs` and fulfill if possible → repeat.
+6. When the needed data appears, agent sets status back to `running`, cleans up `blocked:<id>` and `request:<id>:needs`.
+7. On completion, agent sets `agent:<id>:status` → `done`.
 
 ## Setup Guide
 
