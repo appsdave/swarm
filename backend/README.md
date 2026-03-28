@@ -55,10 +55,20 @@ backend/
 
 ## API Endpoints
 
+All request/response bodies are JSON. Endpoints that create resources return
+**201**; most others return **200**. Validation errors return **400** and
+missing resources return **404**.
+
 ### Health
 
 ```
-GET /api/health  →  { status: "ok", timestamp: "..." }
+GET /api/health
+```
+
+Response `200`:
+
+```json
+{ "status": "ok", "timestamp": "2026-03-28T21:08:00.000Z" }
 ```
 
 ### Agents
@@ -71,6 +81,45 @@ POST   /api/agents/:id/block    — Block agent    { waitingFor }
 POST   /api/agents/:id/unblock  — Unblock agent
 ```
 
+**GET /api/agents** — `200`
+
+```json
+{
+  "agents": [
+    {
+      "agentId": "backend-1",
+      "status": "running",
+      "task": "Building backend application",
+      "lastPoll": "2026-03-28T21:08:00.000Z",
+      "blocked": null,
+      "schema": null,
+      "needs": null,
+      "offers": null
+    }
+  ]
+}
+```
+
+**GET /api/agents/:id** — `200` or `404`
+
+Same shape as a single element in the array above.
+
+**PUT /api/agents/:id/status** — `200` or `400`
+
+Request: `{ "status": "running", "task": "Doing work" }` (`task` is optional).
+
+Response: `{ "agentId": "backend-1", "status": "running", "task": "Doing work" }`
+
+**POST /api/agents/:id/block** — `200` or `400`
+
+Request: `{ "waitingFor": "schema:frontend" }`
+
+Response: `{ "agentId": "backend-1", "status": "blocked", "waitingFor": "schema:frontend" }`
+
+**POST /api/agents/:id/unblock** — `200`
+
+Response: `{ "agentId": "backend-1", "status": "running" }`
+
 ### Messages
 
 ```
@@ -81,12 +130,55 @@ POST   /api/messages/broadcast     — Broadcast message     { from, text }
 GET    /api/messages/broadcast/log — Broadcast history      ?limit=50 (max 200)
 ```
 
+**POST /api/messages** — `201` or `400`
+
+Request: `{ "from": "backend-1", "to": "frontend", "text": "Schema ready" }`
+
+Response: `{ "from": "backend-1", "to": "frontend", "text": "Schema ready", "timestamp": "..." }`
+
+**GET /api/messages/:agentId** — `200`
+
+```json
+{
+  "agentId": "frontend",
+  "messages": [
+    { "from": "backend-1", "text": "Schema ready" }
+  ]
+}
+```
+
+**DELETE /api/messages/:agentId** — `200`
+
+Response: `{ "agentId": "frontend", "cleared": 1 }`
+
+**POST /api/messages/broadcast** — `201` or `400`
+
+Request: `{ "from": "backend-1", "text": "All schemas published" }`
+
+Response: `{ "from": "backend-1", "text": "All schemas published", "timestamp": "..." }`
+
+**GET /api/messages/broadcast/log** — `200`
+
+```json
+{ "messages": [{ "from": "backend-1", "text": "All schemas published", "timestamp": "..." }] }
+```
+
 ### Schemas
 
 ```
 GET    /api/schemas/:agentId    — Retrieve published schema
 PUT    /api/schemas/:agentId    — Publish schema  { schema }
 ```
+
+**PUT /api/schemas/:agentId** — `200` or `400`
+
+Request: `{ "schema": { "tables": { "users": { "id": "int", "name": "text" } } } }`
+
+Response: `{ "agentId": "backend", "schema": { ... } }`
+
+**GET /api/schemas/:agentId** — `200` or `404`
+
+Response: `{ "agentId": "backend", "schema": { ... } }`
 
 ### Negotiation
 
@@ -95,6 +187,28 @@ GET    /api/negotiation                   — Full needs/offers state
 PUT    /api/negotiation/:agentId/needs    — Set needs   { needs }
 PUT    /api/negotiation/:agentId/offers   — Set offers  { offers }
 ```
+
+**GET /api/negotiation** — `200`
+
+```json
+{
+  "negotiation": {
+    "backend-1": { "needs": "schema:frontend", "offers": "API endpoints, DB schema" }
+  }
+}
+```
+
+**PUT /api/negotiation/:agentId/needs** — `200` or `400`
+
+Request: `{ "needs": "schema:frontend" }`
+
+Response: `{ "agentId": "backend-1", "needs": "schema:frontend" }`
+
+**PUT /api/negotiation/:agentId/offers** — `200` or `400`
+
+Request: `{ "offers": "API endpoints, DB schema" }`
+
+Response: `{ "agentId": "backend-1", "offers": "API endpoints, DB schema" }`
 
 ### Events (SSE)
 
@@ -111,6 +225,10 @@ Event types pushed over the stream:
 | `broadcast` | A broadcast message is sent |
 | `raw` | Unparseable pub/sub message (fallback) |
 
+`agent-event` payloads include an `agentId`, a `type` field (`status-change`,
+`blocked`, `unblocked`, `schema-published`, `message-sent`, `needs-updated`,
+`offers-updated`), a `payload` object, and a `timestamp`.
+
 ## Redis Integration
 
 The service maintains three ioredis connections:
@@ -126,15 +244,19 @@ via `swarm:agent-events`, so SSE listeners receive updates in real time.
 
 ## Testing
 
-Tests use the Node.js built-in test runner and import the Express app directly
-(no Redis connection required):
+Tests use the Node.js built-in test runner (`node:test`) and require a live
+Redis connection (the test suite calls `connectAll()` to exercise the full
+stack including pub/sub):
 
 ```bash
+# Make sure SWARM_REDIS_URL is set (or a local Redis is running on port 6379)
 npm test
 ```
 
-The test suite covers all route groups including validation of required fields
-and error responses.
+The test suite covers all route groups including validation of required fields,
+error responses, and the full create → read → delete lifecycle for messages,
+schemas, and negotiation state. Test keys are cleaned up automatically via
+`beforeEach` / `after` hooks.
 
 ## Graceful Shutdown
 
