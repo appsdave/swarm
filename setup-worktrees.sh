@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SWARM_PROJECT_ROOT:-$(pwd)}"
 cd "$REPO_ROOT"
 
 # Ensure we have at least one commit (worktrees require it)

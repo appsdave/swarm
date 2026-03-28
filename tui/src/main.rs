@@ -916,12 +916,21 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-fn repo_root() -> Result<PathBuf> {
-    std::env::current_dir()?
+fn project_root() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("SWARM_PROJECT_ROOT") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    let cwd = std::env::current_dir()?;
+    cwd
         .ancestors()
-        .find(|p| p.join("launch-swarm.sh").exists())
+        .find(|p| p.join(".git").exists())
         .map(Path::to_path_buf)
-        .context("Could not locate repository root")
+        .or(Some(cwd))
+        .context("Could not locate project root")
 }
 
 fn resolve_junie() -> Result<PathBuf> {
@@ -1051,13 +1060,13 @@ fn desired_agent_split(frontend_available: usize, backend_available: usize) -> (
     (frontend, backend)
 }
 
-fn build_agent_specs(repo_root: &Path, task_prompt: Option<&str>) -> Result<Vec<AgentSpec>> {
-    let frontend_worktrees = discover_worktrees(repo_root, AgentRole::Frontend)?;
-    let backend_worktrees = discover_worktrees(repo_root, AgentRole::Backend)?;
+fn build_agent_specs(project_root: &Path, task_prompt: Option<&str>) -> Result<Vec<AgentSpec>> {
+    let frontend_worktrees = discover_worktrees(project_root, AgentRole::Frontend)?;
+    let backend_worktrees = discover_worktrees(project_root, AgentRole::Backend)?;
     let (frontend_count, backend_count) =
         desired_agent_split(frontend_worktrees.len(), backend_worktrees.len());
 
-    let prompt_dir = repo_root.join("tui/runtime-prompts");
+    let prompt_dir = project_root.join(".swarm/runtime-prompts");
     fs::create_dir_all(&prompt_dir)?;
 
     let mut specs = Vec::new();
@@ -1148,9 +1157,9 @@ fn render_prompt(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let repo_root = repo_root()?;
+    let project_root = project_root()?;
     let task_prompt = task_prompt_from_args();
-    let specs = build_agent_specs(&repo_root, None)?;
+    let specs = build_agent_specs(&project_root, None)?;
     let junie_path = resolve_junie()?;
     let redis_url = std::env::var("SWARM_REDIS_URL").ok();
 
@@ -1200,7 +1209,7 @@ async fn main() -> Result<()> {
                         }
                         KeyCode::Enter if !app.launched => {
                             let launch_task = app.current_task_prompt();
-                            let launch_specs = build_agent_specs(&repo_root, launch_task.as_deref())?;
+                            let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
                             app.reset_for_next_run();
                             clear_swarm_redis_state(redis_url.as_deref(), &launch_specs, &tx).await;
                             while let Ok(ev) = rx.try_recv() {

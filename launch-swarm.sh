@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="$REPO_ROOT/.swarm-logs"
+PROJECT_ROOT="${SWARM_PROJECT_ROOT:-$(pwd)}"
+INSTALL_HOME="${SWARM_INSTALL_HOME:-$(cd "$(dirname "$0")" && pwd)}"
+PROMPT_ROOT="$PROJECT_ROOT/prompts"
+if [ ! -d "$PROMPT_ROOT" ]; then
+  PROMPT_ROOT="$INSTALL_HOME/prompts"
+fi
+
+LOG_DIR="$PROJECT_ROOT/.swarm-logs"
 mkdir -p "$LOG_DIR"
 
 PID_BACKEND=""
@@ -57,8 +63,13 @@ wait_for_swarm_done() {
 }
 
 # Verify worktrees exist
-if [ ! -d "$REPO_ROOT/worktree-frontend" ] || [ ! -d "$REPO_ROOT/worktree-backend" ]; then
-  echo "❌ Worktrees not found. Run ./setup-worktrees.sh first."
+if [ ! -d "$PROJECT_ROOT/worktree-frontend" ] || [ ! -d "$PROJECT_ROOT/worktree-backend" ]; then
+  echo "❌ Worktrees not found in $PROJECT_ROOT. Run 'swarm setup' first."
+  exit 1
+fi
+
+if [ ! -f "$PROMPT_ROOT/agent-frontend.md" ] || [ ! -f "$PROMPT_ROOT/agent-backend.md" ]; then
+  echo "❌ Agent prompt templates not found in $PROMPT_ROOT. Re-run ./install-swarm.sh."
   exit 1
 fi
 
@@ -90,16 +101,16 @@ redis_del \
 
 # Launch Agent B (Backend) — starts first so schema is published early
 echo "🔧 Starting Agent B (Backend)..."
-cd "$REPO_ROOT/worktree-backend"
-junie --task "$(<"$REPO_ROOT/prompts/agent-backend.md")" --project . >"$LOG_DIR/agent-backend.log" 2>&1 &
+cd "$PROJECT_ROOT/worktree-backend"
+junie --task "$(<"$PROMPT_ROOT/agent-backend.md")" --project . >"$LOG_DIR/agent-backend.log" 2>&1 &
 PID_BACKEND=$!
 echo "   PID: $PID_BACKEND"
 echo "   Log: $LOG_DIR/agent-backend.log"
 
 # Launch Agent A (Frontend)
 echo "🎨 Starting Agent A (Frontend)..."
-cd "$REPO_ROOT/worktree-frontend"
-junie --task "$(<"$REPO_ROOT/prompts/agent-frontend.md")" --project . >"$LOG_DIR/agent-frontend.log" 2>&1 &
+cd "$PROJECT_ROOT/worktree-frontend"
+junie --task "$(<"$PROMPT_ROOT/agent-frontend.md")" --project . >"$LOG_DIR/agent-frontend.log" 2>&1 &
 PID_FRONTEND=$!
 echo "   PID: $PID_FRONTEND"
 echo "   Log: $LOG_DIR/agent-frontend.log"

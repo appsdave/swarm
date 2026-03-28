@@ -101,31 +101,64 @@ You should see `PONG`. If you get a TLS error, try:
 redis-cli -u "$SWARM_REDIS_URL" --tls PING
 ```
 
-### Step 6 — Install the Local Launcher (Recommended)
+### Step 6 — Install the Global Launcher (Recommended)
+
+The new default install location is `~/.swarm`, so the toolchain is self-contained under your home directory.
+
+If you want a one-liner install from GitHub, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap-swarm.sh | bash -s -- https://github.com/<owner>/<repo>.git
+```
+
+That bootstrap command clones or updates the source into `~/.swarm/src/ambition`, installs the runtime into `~/.swarm`, and makes sure `~/.swarm/bin` is added to `~/.bashrc` and `~/.zshrc`.
+
+If you already cloned the repo manually, you can still install directly with:
 
 ```bash
 ./install-swarm.sh
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.swarm/bin:$PATH"
 ```
 
 This installs:
 
-- `swarm-tui` → the compiled Rust TUI in `~/.local/bin`
-- `swarm-task` → a small wrapper command for launching the swarm
+- `swarm` → the primary global command that opens the TUI
+- `swarm-tui` → the compiled Rust TUI in `~/.swarm/bin`
+- `swarm-task` → a compatibility alias to the same wrapper
+- support scripts and prompt templates in `~/.swarm/share`
+- the source checkout under `~/.swarm/src/ambition` when you use the bootstrap installer
 
 If you want the `PATH` change to persist:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+echo 'export PATH="$HOME/.swarm/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### Step 7 — Launch the Swarm
+### Step 7 — Prepare Any Project You Want To Swarm
+
+From the root of the project you want the agents to work on:
+
+```bash
+swarm setup
+```
+
+That creates `worktree-frontend/` and `worktree-backend/` inside the current project.
+
+### Step 8 — Launch the Swarm
 
 The easiest command is:
 
 ```bash
-swarm-task run "Update the documentation, README, and setup instructions"
+swarm
+```
+
+That opens the TUI for the current project. Type the task into the `Swarm Task Input` box and press `Enter`.
+
+If you want to pass the task from the command line instead, use:
+
+```bash
+swarm run "Update the documentation, README, and setup instructions"
 ```
 
 That uses the wrapper so the task text after `run` is passed to the TUI/Junie launcher.
@@ -141,16 +174,16 @@ Then type the task into the `Swarm Task Input` box at the bottom of the screen a
 You can also start the shell-based launcher instead:
 
 ```bash
-swarm-task shell
+swarm shell
 ```
 
 Or run the shell launcher directly:
 
 ```bash
-./launch-swarm.sh
+swarm-task shell
 ```
 
-The shell launcher starts both agents concurrently and writes logs to `.swarm-logs/agent-frontend.log` and `.swarm-logs/agent-backend.log`.
+The shell launcher starts both agents concurrently and writes logs to `.swarm-logs/agent-frontend.log` and `.swarm-logs/agent-backend.log` in the current project.
 
 If you want to give the swarm a shared mission, pass it as a task prompt:
 
@@ -165,7 +198,7 @@ export SWARM_TASK_PROMPT="Build the frontend and backend for the new dashboard f
 ./tui/target/release/swarm-tui
 ```
 
-The role-specific instructions for each agent are generated automatically in `tui/runtime-prompts/` by the TUI, and the shell launcher uses the checked-in files in `prompts/`.
+The role-specific instructions for each agent are generated automatically in `.swarm/runtime-prompts/` by the TUI, and the shell launcher uses either the current project's `prompts/` directory or the installed templates in `~/.local/share/swarm/prompts/`.
 
 ### Manual Launch (Alternative)
 
@@ -181,9 +214,9 @@ junie --task "$(<../prompts/agent-backend.md)" --project .
 
 ### Where do I enter prompts?
 
-- **Interactive in the TUI**: start `swarm-task run` or `swarm-tui`, type your task directly in the `Swarm Task Input` box, then press `Enter`.
-- **Swarm-wide task via CLI**: pass it as positional CLI text, for example `swarm-task run "Build the dashboard"`, or set `SWARM_TASK_PROMPT`.
-- **Per-agent role/system prompt**: edit `prompts/agent-frontend.md` and `prompts/agent-backend.md` for the shell launcher, or let the TUI generate per-agent prompt files in `tui/runtime-prompts/`.
+- **Interactive in the TUI**: start `swarm` or `swarm-tui`, type your task directly in the `Swarm Task Input` box, then press `Enter`.
+- **Swarm-wide task via CLI**: pass it as positional CLI text, for example `swarm run "Build the dashboard"`, or set `SWARM_TASK_PROMPT`.
+- **Per-agent role/system prompt**: edit `prompts/agent-frontend.md` and `prompts/agent-backend.md` in the current project for the shell launcher, or let the TUI generate per-agent prompt files in `.swarm/runtime-prompts/`.
 - **Direct one-off Junie run**: use `junie --task "your prompt here" --project .` from the relevant worktree.
 
 Each TUI launch is a one-off swarm run. When the agents finish, the logs stay visible, the tracked PIDs are released, and you can type a brand-new task into the same input box and press `Enter` again for the next swarm.
