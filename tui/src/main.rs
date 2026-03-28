@@ -1239,7 +1239,6 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(11),
             Constraint::Min(10),
             Constraint::Length(bottom_input_height),
             Constraint::Length(3),
@@ -1247,17 +1246,16 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .split(f.area());
 
     draw_tab_bar(f, app, chunks[0]);
-    draw_status(f, app, chunks[1]);
     match app.active_tab {
-        ViewTab::Logs => draw_logs(f, app, chunks[2]),
-        ViewTab::Messages => draw_messages(f, app, chunks[2]),
+        ViewTab::Logs => draw_agent_panels(f, app, chunks[1]),
+        ViewTab::Messages => draw_messages(f, app, chunks[1]),
     }
     if app.composing {
-        draw_compose_input(f, app, chunks[3]);
+        draw_compose_input(f, app, chunks[2]);
     } else {
-        draw_task_input(f, app, chunks[3]);
+        draw_task_input(f, app, chunks[2]);
     }
-    draw_help(f, app, chunks[4]);
+    draw_help(f, app, chunks[3]);
 }
 
 fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -1287,30 +1285,63 @@ fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(tab_spans)), area);
 }
 
-fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
+fn draw_agent_panels(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    render_agent_column(
+    draw_agent_panel(
         f,
-        " Frontend Agents ",
+        " Frontend ",
         &app.ordered_agents(&app.frontend_order),
+        &app.frontend_logs,
         AgentRole::Frontend.color(),
         &app.agent_offers,
         &app.agent_needs,
         cols[0],
     );
-    render_agent_column(
+    draw_agent_panel(
         f,
-        " Backend Agents ",
+        " Backend ",
         &app.ordered_agents(&app.backend_order),
+        &app.backend_logs,
         AgentRole::Backend.color(),
         &app.agent_offers,
         &app.agent_needs,
         cols[1],
     );
+}
+
+fn draw_agent_panel(
+    f: &mut ratatui::Frame,
+    title: &str,
+    agents: &[&AgentState],
+    logs: &[String],
+    color: Color,
+    offers: &HashMap<String, String>,
+    needs: &HashMap<String, String>,
+    area: Rect,
+) {
+    // Calculate how many lines the agent status section needs
+    let mut status_lines: u16 = 0;
+    for agent in agents {
+        status_lines += 1; // main agent line
+        let id = &agent.spec.id;
+        if offers.contains_key(id) || needs.contains_key(id) {
+            status_lines += 1; // offers/needs sub-line
+        }
+    }
+    // Add 2 for the border, clamp to a reasonable size
+    let status_height = (status_lines + 2).clamp(3, 9);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(status_height), Constraint::Min(4)])
+        .split(area);
+
+    render_agent_column(f, title, agents, color, offers, needs, rows[0]);
+    render_log_pane(f, logs, &format!("{}Logs ", title), color, rows[1]);
 }
 
 fn render_agent_column(
@@ -1382,15 +1413,6 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-fn draw_logs(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    render_log_pane(f, &app.frontend_logs, " Frontend Logs ", AgentRole::Frontend.color(), cols[0]);
-    render_log_pane(f, &app.backend_logs, " Backend Logs ", AgentRole::Backend.color(), cols[1]);
-}
 
 fn render_log_pane(f: &mut ratatui::Frame, logs: &[String], title: &str, color: Color, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize;
