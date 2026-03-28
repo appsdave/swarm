@@ -22,20 +22,14 @@ export default function PromptBox() {
   const textareaRef = useRef(null);
 
   /* ── Auto-scroll textarea to caret on input ── */
-  const handleChange = useCallback((e) => {
-    setPrompt(e.target.value);
-    setError(null);
-
-    const ta = e.target;
+  const scrollToCaret = useCallback((ta) => {
     requestAnimationFrame(() => {
       const { selectionEnd, value } = ta;
       const textBeforeCaret = value.substring(0, selectionEnd);
-      const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
-
-      // Use a hidden mirror div to measure real visual caret position
-      // accounting for word-wrap on long lines without newlines.
-      const mirror = document.createElement('div');
       const style = getComputedStyle(ta);
+      const lineHeight = parseFloat(style.lineHeight) || 20;
+
+      const mirror = document.createElement('div');
       mirror.style.cssText = [
         'position:absolute',
         'visibility:hidden',
@@ -64,13 +58,26 @@ export default function PromptBox() {
     });
   }, []);
 
-  /* ── Auto-resize textarea height ── */
+  const handleChange = useCallback((e) => {
+    setPrompt(e.target.value);
+    setError(null);
+    scrollToCaret(e.target);
+  }, [scrollToCaret]);
+
+  /* ── Auto-resize textarea height & keep caret visible ── */
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
+
+    const prevScroll = ta.scrollTop;
     ta.style.height = 'auto';
     ta.style.height = `${ta.scrollHeight}px`;
-  }, [prompt]);
+
+    // After resize the textarea may have shrunk below max-height, losing
+    // its scroll position. Restore it, then ensure the caret is still in view.
+    ta.scrollTop = prevScroll;
+    scrollToCaret(ta);
+  }, [prompt, scrollToCaret]);
 
   /* ── Send prompt & clear ── */
   const handleSend = useCallback(async () => {
