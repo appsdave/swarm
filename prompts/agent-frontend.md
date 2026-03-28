@@ -59,6 +59,32 @@ GET schema:backend
 ```
 If `schema:backend` already exists, skip the blocking step entirely and use it.
 
+### Direct Messaging
+
+You can send messages directly to the backend agent and receive messages from it via Redis message queues.
+
+**To send a message to the backend agent:**
+```
+LPUSH msg:backend "frontend|<your message text>"
+```
+
+**To read messages sent to you:**
+```
+LRANGE msg:frontend 0 -1
+```
+After reading, clear your inbox:
+```
+DEL msg:frontend
+```
+
+**Use messages for:**
+- Asking questions: `LPUSH msg:backend "frontend|What format do you need for the API response?"`
+- Sharing updates: `LPUSH msg:backend "frontend|I changed the login page to use the new auth flow"`
+- Coordinating work: `LPUSH msg:backend "frontend|Please hold off on the user model, I am refactoring the form"`
+- Answering questions: check `LRANGE msg:frontend 0 -1` each poll cycle and respond via `LPUSH msg:backend`
+
+**Every poll cycle**, check your message inbox and respond to any pending messages before continuing your work.
+
 ### Negotiation Protocol
 
 Every poll cycle, check what the other agent needs from you:
