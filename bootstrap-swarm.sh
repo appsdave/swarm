@@ -18,6 +18,23 @@ EOF
   exit 1
 fi
 
+case "$REPO_URL" in
+  https://github.com/*)
+    if [[ ! "$REPO_URL" =~ \.git$ ]]; then
+      cat >&2 <<EOF
+❌ Invalid GitHub repository URL: $REPO_URL
+
+Expected a full clone URL ending in '.git', for example:
+  https://github.com/appsdave/swarm.git
+
+One-liner:
+  curl -fsSL https://raw.githubusercontent.com/appsdave/swarm/main/bootstrap-swarm.sh | bash -s -- https://github.com/appsdave/swarm.git
+EOF
+      exit 1
+    fi
+    ;;
+esac
+
 mkdir -p "$(dirname "$SWARM_SRC_DIR")"
 
 if [ -d "$SWARM_SRC_DIR/.git" ]; then

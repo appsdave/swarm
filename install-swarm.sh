@@ -5,23 +5,41 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 SWARM_HOME="${SWARM_HOME:-${HOME}/.swarm}"
 BIN_DIR="${SWARM_HOME}/bin"
 INSTALL_DIR="${SWARM_HOME}/share"
+ENV_FILE="${SWARM_HOME}/env"
 
 ensure_path_entry() {
   local profile_file="$1"
   local export_line='export PATH="$HOME/.swarm/bin:$PATH"'
+  local env_line='[ -f "$HOME/.swarm/env" ] && . "$HOME/.swarm/env"'
 
   if [ ! -f "$profile_file" ]; then
-    printf '%s\n' "$export_line" >"$profile_file"
+    printf '%s\n%s\n' "$export_line" "$env_line" >"$profile_file"
     return
   fi
 
   if ! grep -Fqx "$export_line" "$profile_file"; then
     printf '\n%s\n' "$export_line" >>"$profile_file"
   fi
+
+  if ! grep -Fqx "$env_line" "$profile_file"; then
+    printf '%s\n' "$env_line" >>"$profile_file"
+  fi
+}
+
+ensure_env_file() {
+  mkdir -p "$SWARM_HOME"
+  if [ ! -f "$ENV_FILE" ]; then
+    cat >"$ENV_FILE" <<'EOF'
+# swarm environment
+# Uncomment and set this if you want swarm commands to auto-load Redis config.
+# export SWARM_REDIS_URL="rediss://..."
+EOF
+  fi
 }
 
 mkdir -p "$BIN_DIR"
 mkdir -p "$INSTALL_DIR"
+ensure_env_file
 
 echo "🔨 Building swarm-tui..."
 cd "$REPO_ROOT/tui"
@@ -40,7 +58,13 @@ set -euo pipefail
 SWARM_HOME="${SWARM_HOME:-$HOME/.swarm}"
 BIN_DIR="$SWARM_HOME/bin"
 INSTALL_DIR="$SWARM_HOME/share"
+ENV_FILE="$SWARM_HOME/env"
 PROJECT_ROOT="${SWARM_PROJECT_ROOT:-$PWD}"
+
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+fi
 
 command_name="${1:-tui}"
 case "$command_name" in
@@ -86,13 +110,17 @@ echo "   $BIN_DIR/swarm"
 echo "   $BIN_DIR/swarm-tui"
 echo "   $BIN_DIR/swarm-task"
 echo "   $INSTALL_DIR"
+echo "   $ENV_FILE"
 echo ""
-echo "Added ~/.swarm/bin to ~/.bashrc and ~/.zshrc if needed."
-echo "Open a new shell, or run:"
+echo "Added ~/.swarm/bin and ~/.swarm/env loading to ~/.bashrc and ~/.zshrc if needed."
+echo "This installer cannot change your current parent shell automatically."
+echo "Open a new shell, or run one of:"
 echo 'export PATH="$HOME/.swarm/bin:$PATH"'
+echo 'source ~/.bashrc'
 echo ""
 echo "Examples:"
 echo '  cd /path/to/any/git/project && swarm setup'
+echo '  cd /path/to/any/git/project && swarm setup --redis-url "rediss://..."'
 echo '  cd /path/to/any/git/project && swarm'
 echo '  cd /path/to/any/git/project && swarm run "Update the docs and setup scripts"'
 echo '  cd /path/to/any/git/project && swarm shell'

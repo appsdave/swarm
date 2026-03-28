@@ -76,13 +76,23 @@ This creates two folders:
 
 ### Step 4 — Set the Redis Connection URL
 
+Recommended once-per-machine command:
+
+```bash
+swarm setup --redis-url "<paste your External Key Value URL here>"
+```
+
+That saves the value into `~/.swarm/env`, and the `swarm` wrapper auto-loads it for future commands.
+
+If you only want it for the current shell session, you can still use:
+
 ```bash
 export SWARM_REDIS_URL="<paste your External Key Value URL here>"
 ```
 
 The External URL will look like: `rediss://red-d73vnn9aae7s73b8e8b0:PASSWORD@ohio-valkey.render.com:6379`
 
-To make it permanent:
+To make it permanent manually:
 
 ```bash
 echo 'export SWARM_REDIS_URL="<your-external-url>"' >> ~/.bashrc
@@ -111,12 +121,18 @@ If you want a one-liner install from GitHub, use:
 curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap-swarm.sh | bash -s -- https://github.com/<owner>/<repo>.git
 ```
 
-That bootstrap command clones or updates the source into `~/.swarm/src/ambition`, installs the runtime into `~/.swarm`, and makes sure `~/.swarm/bin` is added to `~/.bashrc` and `~/.zshrc`.
+That bootstrap command clones or updates the source into `~/.swarm/src/ambition`, installs the runtime into `~/.swarm`, makes sure `~/.swarm/bin` is added to `~/.bashrc` and `~/.zshrc`, and wires those shells to auto-load `~/.swarm/env`.
 
 If you already cloned the repo manually, you can still install directly with:
 
 ```bash
 ./install-swarm.sh
+source ~/.bashrc
+```
+
+If you do not want to reload your shell config, use:
+
+```bash
 export PATH="$HOME/.swarm/bin:$PATH"
 ```
 
@@ -126,9 +142,10 @@ This installs:
 - `swarm-tui` → the compiled Rust TUI in `~/.swarm/bin`
 - `swarm-task` → a compatibility alias to the same wrapper
 - support scripts and prompt templates in `~/.swarm/share`
+- persisted environment config in `~/.swarm/env`
 - the source checkout under `~/.swarm/src/ambition` when you use the bootstrap installer
 
-If you want the `PATH` change to persist:
+If you want the `PATH` change to persist manually:
 
 ```bash
 echo 'export PATH="$HOME/.swarm/bin:$PATH"' >> ~/.bashrc
@@ -144,6 +161,12 @@ swarm setup
 ```
 
 That creates `worktree-frontend/` and `worktree-backend/` inside the current project.
+
+You can also save your Redis URL during setup so you do not need a separate export step:
+
+```bash
+swarm setup --redis-url "rediss://<your External Key Value URL>"
+```
 
 ### Step 8 — Launch the Swarm
 
@@ -198,7 +221,7 @@ export SWARM_TASK_PROMPT="Build the frontend and backend for the new dashboard f
 ./tui/target/release/swarm-tui
 ```
 
-The role-specific instructions for each agent are generated automatically in `.swarm/runtime-prompts/` by the TUI, and the shell launcher uses either the current project's `prompts/` directory or the installed templates in `~/.local/share/swarm/prompts/`.
+The role-specific instructions for each agent are generated automatically in `.swarm/runtime-prompts/` by the TUI, and the shell launcher uses either the current project's `prompts/` directory or the installed templates in `~/.swarm/share/prompts/`.
 
 ### Manual Launch (Alternative)
 
@@ -256,7 +279,7 @@ You now have `3` ways to confirm this:
 
 | Problem | Fix |
 |---|---|
-| `SWARM_REDIS_URL is not set` | Run the `export` command from Step 4 |
+| `SWARM_REDIS_URL is not set` | Run `swarm setup --redis-url "rediss://<your External Key Value URL>"`, or export it manually |
 | `Could not connect to Redis` | Check the URL is the **External** one, not Internal |
 | TLS errors | Render free-tier Redis uses `rediss://` (TLS). Make sure your client supports it |
 | Worktree already exists | Delete with `git worktree remove worktree-frontend` then re-run setup |
