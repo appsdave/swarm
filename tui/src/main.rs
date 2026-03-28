@@ -1139,6 +1139,12 @@ fn ensure_worktrees_exist(project_root: &Path) -> Result<()> {
 
     eprintln!("⚙️  No worktrees found — creating them automatically...");
 
+    // Prune stale worktree registrations (handles "missing but already registered" errors)
+    let _ = std::process::Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(project_root)
+        .status();
+
     // Try setup-worktrees.sh from several locations
     let candidates = [
         project_root.join("setup-worktrees.sh"),
@@ -1182,7 +1188,7 @@ fn ensure_worktrees_exist(project_root: &Path) -> Result<()> {
             .current_dir(project_root)
             .status();
         let status = std::process::Command::new("git")
-            .args(["worktree", "add", wt_dir.to_str().unwrap_or("."), &branch])
+            .args(["worktree", "add", "-f", wt_dir.to_str().unwrap_or("."), &branch])
             .current_dir(project_root)
             .status()?;
         if !status.success() {
