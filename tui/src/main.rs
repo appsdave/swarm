@@ -1238,33 +1238,29 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(12),
+            Constraint::Length(1),
+            Constraint::Length(11),
             Constraint::Min(10),
             Constraint::Length(bottom_input_height),
             Constraint::Length(3),
         ])
         .split(f.area());
 
-    draw_status(f, app, chunks[0]);
+    draw_tab_bar(f, app, chunks[0]);
+    draw_status(f, app, chunks[1]);
     match app.active_tab {
-        ViewTab::Logs => draw_logs(f, app, chunks[1]),
-        ViewTab::Messages => draw_messages(f, app, chunks[1]),
+        ViewTab::Logs => draw_logs(f, app, chunks[2]),
+        ViewTab::Messages => draw_messages(f, app, chunks[2]),
     }
     if app.composing {
-        draw_compose_input(f, app, chunks[2]);
+        draw_compose_input(f, app, chunks[3]);
     } else {
-        draw_task_input(f, app, chunks[2]);
+        draw_task_input(f, app, chunks[3]);
     }
-    draw_help(f, app, chunks[3]);
+    draw_help(f, app, chunks[4]);
 }
 
-fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(area);
-
-    // Tab bar
+fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let tab_spans: Vec<Span> = vec![
         Span::styled(" ", Style::default()),
         Span::styled(
@@ -1288,12 +1284,14 @@ fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
         Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::styled(" switch view", Style::default().fg(Color::DarkGray)),
     ];
-    f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
+    f.render_widget(Paragraph::new(Line::from(tab_spans)), area);
+}
 
+fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
+        .split(area);
 
     render_agent_column(
         f,
