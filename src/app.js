@@ -12,6 +12,8 @@ const projectsRoutes = require('./features/projects/projects.routes');
 const tasksRoutes = require('./features/tasks/tasks.routes');
 const filesRoutes = require('./features/files/files.routes');
 const promptsRoutes = require('./features/prompts/prompts.routes');
+const tipsRoutes = require('./features/tips/tips.routes');
+const layoutRoutes = require('./features/layout/layout.routes');
 
 const app = express();
 
@@ -28,6 +30,8 @@ app.use('/api/projects', projectsRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/files', filesRoutes);
 app.use('/api/prompts', promptsRoutes);
+app.use('/api/tips', tipsRoutes);
+app.use('/api/layout', layoutRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

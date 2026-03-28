@@ -15,6 +15,12 @@ router.get('/config', (_req, res) => {
   res.json({
     maxPromptLength: MAX_PROMPT_LENGTH,
     autoScrollEnabled: true,
+    scrollToCursor: true,
+    scrollBehavior: 'smooth',
+    maxVisibleLines: 6,
+    placeholder: 'Describe your task…',
+    submitKey: 'Enter',
+    newlineKey: 'Shift+Enter',
   });
 });
 
