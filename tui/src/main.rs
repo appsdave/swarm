@@ -219,13 +219,10 @@ enum AppEvent {
     RedisError(String),
     AgentSpawned { agent_id: String, pid: u32 },
     AgentExited { agent_id: String, code: Option<i32> },
-<<<<<<< Updated upstream
     MessageSent { to: String, body: String },
-=======
     BackendHealth { healthy: bool, timestamp: String },
     BackendRuns(Vec<RunRecord>),
     BackendNotifications(Vec<Notification>),
->>>>>>> Stashed changes
 }
 
 #[derive(Debug)]
@@ -249,9 +246,8 @@ struct App {
     task_input: String,
     cursor_pos: usize,
     schema_state: HashMap<String, bool>,
-<<<<<<< Updated upstream
     // Agent communication features
-    active_tab: ViewTab,
+    view_tab: ViewTab,
     messages: Vec<MessageEntry>,
     composing: bool,
     compose_input: String,
@@ -259,7 +255,7 @@ struct App {
     compose_target: AgentRole,
     agent_offers: HashMap<String, String>,
     agent_needs: HashMap<String, String>,
-=======
+    // Backend / render features
     active_tab: ActiveTab,
     run_history: Vec<RunRecord>,
     notifications: Vec<Notification>,
@@ -267,7 +263,6 @@ struct App {
     history_scroll: usize,
     notif_scroll: usize,
     backend_url: String,
->>>>>>> Stashed changes
 }
 
 impl App {
@@ -311,8 +306,7 @@ impl App {
             task_input: task_prompt.clone().unwrap_or_default(),
             cursor_pos: task_prompt.as_deref().unwrap_or_default().len(),
             schema_state: HashMap::new(),
-<<<<<<< Updated upstream
-            active_tab: ViewTab::Logs,
+            view_tab: ViewTab::Logs,
             messages: Vec::new(),
             composing: false,
             compose_input: String::new(),
@@ -320,7 +314,6 @@ impl App {
             compose_target: AgentRole::Frontend,
             agent_offers: HashMap::new(),
             agent_needs: HashMap::new(),
-=======
             active_tab: ActiveTab::Swarm,
             run_history: Vec::new(),
             notifications: Vec::new(),
@@ -333,7 +326,6 @@ impl App {
             history_scroll: 0,
             notif_scroll: 0,
             backend_url: String::new(),
->>>>>>> Stashed changes
         }
     }
 
@@ -1403,12 +1395,6 @@ async fn backend_poller(
 }
 
 fn draw(f: &mut ratatui::Frame, app: &App) {
-<<<<<<< Updated upstream
-    let available_width = f.area().width.saturating_sub(2) as usize;
-    let bottom_input_height = if app.composing {
-        3u16
-    } else if available_width == 0 {
-=======
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1477,8 +1463,9 @@ fn draw_backend_status_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
 fn draw_swarm_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let available_width = area.width.saturating_sub(2) as usize;
-    let task_input_height = if available_width == 0 {
->>>>>>> Stashed changes
+    let bottom_input_height = if app.composing {
+        3u16
+    } else if available_width == 0 {
         3
     } else {
         let display_text = if app.task_input.trim().is_empty() {
@@ -1493,22 +1480,14 @@ fn draw_swarm_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-<<<<<<< Updated upstream
             Constraint::Length(12),
             Constraint::Min(10),
             Constraint::Length(bottom_input_height),
-            Constraint::Length(3),
-=======
-            Constraint::Length(10),
-            Constraint::Min(5),
-            Constraint::Length(task_input_height),
->>>>>>> Stashed changes
         ])
         .split(area);
 
     draw_status(f, app, chunks[0]);
-<<<<<<< Updated upstream
-    match app.active_tab {
+    match app.view_tab {
         ViewTab::Logs => draw_logs(f, app, chunks[1]),
         ViewTab::Messages => draw_messages(f, app, chunks[1]),
     }
@@ -1517,10 +1496,6 @@ fn draw_swarm_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
     } else {
         draw_task_input(f, app, chunks[2]);
     }
-    draw_help(f, app, chunks[3]);
-=======
-    draw_logs(f, app, chunks[1]);
-    draw_task_input(f, app, chunks[2]);
 }
 
 fn draw_history_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -1610,7 +1585,6 @@ fn draw_notifications_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(Color::Magenta)),
     );
     f.render_widget(list, area);
->>>>>>> Stashed changes
 }
 
 fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -1624,7 +1598,7 @@ fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
         Span::styled(" ", Style::default()),
         Span::styled(
             format!(" {} ", ViewTab::Logs.label()),
-            if app.active_tab == ViewTab::Logs {
+            if app.view_tab == ViewTab::Logs {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -1633,7 +1607,7 @@ fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
         Span::styled("  │  ", Style::default().fg(Color::Rgb(60, 60, 60))),
         Span::styled(
             format!(" {} ({}) ", ViewTab::Messages.label(), app.messages.len()),
-            if app.active_tab == ViewTab::Messages {
+            if app.view_tab == ViewTab::Messages {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -1967,7 +1941,6 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
-<<<<<<< Updated upstream
     let key_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -1978,40 +1951,56 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(" "));
 
-    if app.composing {
-        spans.push(Span::styled("Enter", key_style));
-        spans.push(Span::styled(" Send", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("Esc", key_style));
-        spans.push(Span::styled(" Cancel", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("Ctrl+T", key_style));
-        spans.push(Span::styled(" Switch target", desc_style));
-    } else if !app.launched {
-        spans.push(Span::styled("Enter", key_style));
-        spans.push(Span::styled(" Launch swarm", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("q", key_style));
-        spans.push(Span::styled("/", desc_style));
-        spans.push(Span::styled("Esc", key_style));
-        spans.push(Span::styled(" Quit", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("Tab", key_style));
-        spans.push(Span::styled(" Switch view", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("Ctrl+M", key_style));
-        spans.push(Span::styled(" Send message", desc_style));
-    } else {
-        spans.push(Span::styled("q", key_style));
-        spans.push(Span::styled("/", desc_style));
-        spans.push(Span::styled("Esc", key_style));
-        spans.push(Span::styled(" Quit", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("Tab", key_style));
-        spans.push(Span::styled(" Switch view", desc_style));
-        spans.push(sep.clone());
-        spans.push(Span::styled("Ctrl+M", key_style));
-        spans.push(Span::styled(" Send message", desc_style));
+    match app.active_tab {
+        ActiveTab::Swarm => {
+            if app.composing {
+                spans.push(Span::styled("Enter", key_style));
+                spans.push(Span::styled(" Send", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Esc", key_style));
+                spans.push(Span::styled(" Cancel", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Ctrl+T", key_style));
+                spans.push(Span::styled(" Switch target", desc_style));
+            } else if !app.launched {
+                spans.push(Span::styled("Enter", key_style));
+                spans.push(Span::styled(" Launch swarm", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("q", key_style));
+                spans.push(Span::styled("/", desc_style));
+                spans.push(Span::styled("Esc", key_style));
+                spans.push(Span::styled(" Quit", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Tab", key_style));
+                spans.push(Span::styled(" Switch view", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Ctrl+M", key_style));
+                spans.push(Span::styled(" Send message", desc_style));
+            } else {
+                spans.push(Span::styled("q", key_style));
+                spans.push(Span::styled("/", desc_style));
+                spans.push(Span::styled("Esc", key_style));
+                spans.push(Span::styled(" Quit", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Tab", key_style));
+                spans.push(Span::styled(" Switch view", desc_style));
+                spans.push(sep.clone());
+                spans.push(Span::styled("Ctrl+M", key_style));
+                spans.push(Span::styled(" Send message", desc_style));
+            }
+        }
+        ActiveTab::History | ActiveTab::Notifications => {
+            spans.push(Span::styled("↑/↓", key_style));
+            spans.push(Span::styled(" Scroll", desc_style));
+            spans.push(sep.clone());
+            spans.push(Span::styled("Tab", key_style));
+            spans.push(Span::styled(" Switch view", desc_style));
+            spans.push(sep.clone());
+            spans.push(Span::styled("q", key_style));
+            spans.push(Span::styled("/", desc_style));
+            spans.push(Span::styled("Esc", key_style));
+            spans.push(Span::styled(" Quit", desc_style));
+        }
     }
 
     if let Some(err) = &app.redis_error {
@@ -2021,29 +2010,6 @@ fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Red),
         ));
     }
-=======
-    let tab_help = match app.active_tab {
-        ActiveTab::Swarm => {
-            let launch_msg = if !app.launched {
-                "[Enter] Launch"
-            } else {
-                "[Enter] Relaunch after exit"
-            };
-            format!("{launch_msg} | [Backspace] Edit")
-        }
-        ActiveTab::History => "[↑/↓] Scroll".into(),
-        ActiveTab::Notifications => "[↑/↓] Scroll".into(),
-    };
-
-    let redis = app
-        .redis_error
-        .as_deref()
-        .map(|e| format!(" | redis: {e}"))
-        .unwrap_or_default();
-    let text = format!(
-        " [Tab] Switch | [q] Quit | {tab_help}{redis}"
-    );
->>>>>>> Stashed changes
 
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
@@ -2419,95 +2385,17 @@ async fn main() -> Result<()> {
         if event::poll(timeout)? {
             if let CEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-<<<<<<< Updated upstream
-                    if app.composing {
+                    if app.composing && app.active_tab == ActiveTab::Swarm {
                         // Compose mode key handling
                         match key.code {
                             KeyCode::Esc => {
                                 app.composing = false;
                                 app.compose_input.clear();
                                 app.compose_cursor = 0;
-=======
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
-                        KeyCode::Tab => {
-                            app.active_tab = app.active_tab.next();
-                        }
-                        KeyCode::Up => match app.active_tab {
-                            ActiveTab::History => {
-                                app.history_scroll = app.history_scroll.saturating_sub(1);
-                            }
-                            ActiveTab::Notifications => {
-                                app.notif_scroll = app.notif_scroll.saturating_sub(1);
-                            }
-                            _ => {}
-                        },
-                        KeyCode::Down => match app.active_tab {
-                            ActiveTab::History => {
-                                if app.history_scroll < app.run_history.len().saturating_sub(1) {
-                                    app.history_scroll += 1;
-                                }
-                            }
-                            ActiveTab::Notifications => {
-                                if app.notif_scroll < app.notifications.len().saturating_sub(1) {
-                                    app.notif_scroll += 1;
-                                }
-                            }
-                            _ => {}
-                        },
-                        KeyCode::Char(ch) if !app.launched && app.active_tab == ActiveTab::Swarm => {
-                            app.task_input.insert(app.cursor_pos, ch);
-                            app.cursor_pos += ch.len_utf8();
-                        }
-                        KeyCode::Backspace if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
-                            // Find the previous char boundary
-                            let prev = app.task_input[..app.cursor_pos]
-                                .char_indices()
-                                .next_back()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            app.task_input.remove(prev);
-                            app.cursor_pos = prev;
-                        }
-                        KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
-                            app.task_input.remove(app.cursor_pos);
-                        }
-                        KeyCode::Left if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
-                            // Move cursor back one char
-                            app.cursor_pos = app.task_input[..app.cursor_pos]
-                                .char_indices()
-                                .next_back()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                        }
-                        KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
-                            // Move cursor forward one char
-                            let next = app.task_input[app.cursor_pos..]
-                                .char_indices()
-                                .nth(1)
-                                .map(|(i, _)| app.cursor_pos + i)
-                                .unwrap_or(app.task_input.len());
-                            app.cursor_pos = next;
-                        }
-                        KeyCode::Home if !app.launched && app.active_tab == ActiveTab::Swarm => {
-                            app.cursor_pos = 0;
-                        }
-                        KeyCode::End if !app.launched && app.active_tab == ActiveTab::Swarm => {
-                            app.cursor_pos = app.task_input.len();
-                        }
-                        KeyCode::Enter if !app.launched && app.active_tab == ActiveTab::Swarm => {
-                            let launch_task = app.current_task_prompt();
-                            let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
-                            app.reset_for_next_run();
-                            clear_swarm_redis_state(redis_url.as_deref(), &launch_specs, &tx).await;
-                            while let Ok(ev) = rx.try_recv() {
-                                app.handle_event(ev);
->>>>>>> Stashed changes
                             }
                             KeyCode::Enter => {
                                 let body = app.compose_input.trim().to_string();
                                 if !body.is_empty() {
-                                    // Determine target agent IDs for the selected role
                                     let target_ids: Vec<String> = match app.compose_target {
                                         AgentRole::Frontend => app.frontend_order.clone(),
                                         AgentRole::Backend => app.backend_order.clone(),
@@ -2571,22 +2459,49 @@ async fn main() -> Result<()> {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
                             KeyCode::Tab => {
-                                app.active_tab = match app.active_tab {
+                                app.active_tab = app.active_tab.next();
+                            }
+                            // Up/Down for History and Notifications tabs
+                            KeyCode::Up => match app.active_tab {
+                                ActiveTab::History => {
+                                    app.history_scroll = app.history_scroll.saturating_sub(1);
+                                }
+                                ActiveTab::Notifications => {
+                                    app.notif_scroll = app.notif_scroll.saturating_sub(1);
+                                }
+                                _ => {}
+                            },
+                            KeyCode::Down => match app.active_tab {
+                                ActiveTab::History => {
+                                    if app.history_scroll < app.run_history.len().saturating_sub(1) {
+                                        app.history_scroll += 1;
+                                    }
+                                }
+                                ActiveTab::Notifications => {
+                                    if app.notif_scroll < app.notifications.len().saturating_sub(1) {
+                                        app.notif_scroll += 1;
+                                    }
+                                }
+                                _ => {}
+                            },
+                            // Swarm tab: switch sub-view (Logs/Messages)
+                            KeyCode::Char('v') if app.active_tab == ActiveTab::Swarm => {
+                                app.view_tab = match app.view_tab {
                                     ViewTab::Logs => ViewTab::Messages,
                                     ViewTab::Messages => ViewTab::Logs,
                                 };
                             }
-                            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) && app.active_tab == ActiveTab::Swarm => {
                                 app.composing = true;
                                 app.compose_input.clear();
                                 app.compose_cursor = 0;
-                                app.active_tab = ViewTab::Messages;
+                                app.view_tab = ViewTab::Messages;
                             }
-                            KeyCode::Char(ch) if !app.launched => {
+                            KeyCode::Char(ch) if !app.launched && app.active_tab == ActiveTab::Swarm => {
                                 app.task_input.insert(app.cursor_pos, ch);
                                 app.cursor_pos += ch.len_utf8();
                             }
-                            KeyCode::Backspace if !app.launched && app.cursor_pos > 0 => {
+                            KeyCode::Backspace if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
                                 let prev = app.task_input[..app.cursor_pos]
                                     .char_indices()
                                     .next_back()
@@ -2595,17 +2510,17 @@ async fn main() -> Result<()> {
                                 app.task_input.remove(prev);
                                 app.cursor_pos = prev;
                             }
-                            KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() => {
+                            KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
                                 app.task_input.remove(app.cursor_pos);
                             }
-                            KeyCode::Left if !app.launched && app.cursor_pos > 0 => {
+                            KeyCode::Left if !app.launched && app.cursor_pos > 0 && app.active_tab == ActiveTab::Swarm => {
                                 app.cursor_pos = app.task_input[..app.cursor_pos]
                                     .char_indices()
                                     .next_back()
                                     .map(|(i, _)| i)
                                     .unwrap_or(0);
                             }
-                            KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() => {
+                            KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() && app.active_tab == ActiveTab::Swarm => {
                                 let next = app.task_input[app.cursor_pos..]
                                     .char_indices()
                                     .nth(1)
@@ -2613,13 +2528,13 @@ async fn main() -> Result<()> {
                                     .unwrap_or(app.task_input.len());
                                 app.cursor_pos = next;
                             }
-                            KeyCode::Home if !app.launched => {
+                            KeyCode::Home if !app.launched && app.active_tab == ActiveTab::Swarm => {
                                 app.cursor_pos = 0;
                             }
-                            KeyCode::End if !app.launched => {
+                            KeyCode::End if !app.launched && app.active_tab == ActiveTab::Swarm => {
                                 app.cursor_pos = app.task_input.len();
                             }
-                            KeyCode::Enter if !app.launched => {
+                            KeyCode::Enter if !app.launched && app.active_tab == ActiveTab::Swarm => {
                                 let launch_task = app.current_task_prompt();
                                 let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
                                 app.task_input.clear();
