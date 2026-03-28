@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event as CEvent, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event as CEvent, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 
 const MAX_LOGS_PER_AGENT: usize = 1000;
 const MAX_GROUP_LOGS: usize = 2000;
+const MAX_MESSAGES: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum AgentRole {
@@ -117,6 +118,29 @@ struct AgentState {
     logs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewTab {
+    Logs,
+    Messages,
+}
+
+impl ViewTab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Logs => "Logs",
+            Self::Messages => "Messages",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MessageEntry {
+    timestamp: String,
+    from: String,
+    to: String,
+    body: String,
+}
+
 #[derive(Debug, Clone)]
 enum AppEvent {
     Log { agent_id: String, line: String },
@@ -129,9 +153,15 @@ enum AppEvent {
     },
     SchemaPublished { key: String, present: bool },
     AgentMessage { from: String, to: String, body: String },
+    NegotiationUpdate {
+        agent_id: String,
+        offers: Option<String>,
+        needs: Option<String>,
+    },
     RedisError(String),
     AgentSpawned { agent_id: String, pid: u32 },
     AgentExited { agent_id: String, code: Option<i32> },
+    MessageSent { to: String, body: String },
 }
 
 #[derive(Debug)]
@@ -155,6 +185,15 @@ struct App {
     task_input: String,
     cursor_pos: usize,
     schema_state: HashMap<String, bool>,
+    // Agent communication features
+    active_tab: ViewTab,
+    messages: Vec<MessageEntry>,
+    composing: bool,
+    compose_input: String,
+    compose_cursor: usize,
+    compose_target: AgentRole,
+    agent_offers: HashMap<String, String>,
+    agent_needs: HashMap<String, String>,
 }
 
 impl App {
@@ -198,6 +237,14 @@ impl App {
             task_input: task_prompt.clone().unwrap_or_default(),
             cursor_pos: task_prompt.as_deref().unwrap_or_default().len(),
             schema_state: HashMap::new(),
+            active_tab: ViewTab::Logs,
+            messages: Vec::new(),
+            composing: false,
+            compose_input: String::new(),
+            compose_cursor: 0,
+            compose_target: AgentRole::Frontend,
+            agent_offers: HashMap::new(),
+            agent_needs: HashMap::new(),
         }
     }
 
@@ -211,6 +258,12 @@ impl App {
         self.completion_logged = false;
         self.task_input.clear();
         self.cursor_pos = 0;
+        self.messages.clear();
+        self.composing = false;
+        self.compose_input.clear();
+        self.compose_cursor = 0;
+        self.agent_offers.clear();
+        self.agent_needs.clear();
 
         for agent in self.agents.values_mut() {
             agent.status = "⏳ idle".into();
@@ -321,9 +374,49 @@ impl App {
                 }
             }
             AppEvent::AgentMessage { from, to, body } => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+                self.messages.push(MessageEntry {
+                    timestamp: timestamp.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                    body: body.clone(),
+                });
+                if self.messages.len() > MAX_MESSAGES {
+                    let overflow = self.messages.len() - MAX_MESSAGES;
+                    self.messages.drain(0..overflow);
+                }
                 let msg = format!("💬 [{from} → {to}] {body}");
                 self.push_agent_log(&to, msg.clone());
                 self.push_agent_log(&from, msg);
+            }
+            AppEvent::NegotiationUpdate { agent_id, offers, needs } => {
+                if let Some(o) = offers {
+                    let prev = self.agent_offers.insert(agent_id.clone(), o.clone());
+                    if prev.as_deref() != Some(o.as_str()) {
+                        self.push_agent_log(&agent_id, format!("[redis] offers -> {o}"));
+                    }
+                }
+                if let Some(n) = needs {
+                    let prev = self.agent_needs.insert(agent_id.clone(), n.clone());
+                    if prev.as_deref() != Some(n.as_str()) {
+                        self.push_agent_log(&agent_id, format!("[redis] needs -> {n}"));
+                    }
+                }
+            }
+            AppEvent::MessageSent { to, body } => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+                self.messages.push(MessageEntry {
+                    timestamp: timestamp.clone(),
+                    from: "tui-operator".into(),
+                    to: to.clone(),
+                    body: body.clone(),
+                });
+                if self.messages.len() > MAX_MESSAGES {
+                    let overflow = self.messages.len() - MAX_MESSAGES;
+                    self.messages.drain(0..overflow);
+                }
+                let msg = format!("💬 [tui-operator → {to}] {body}");
+                self.push_system_log(msg);
             }
             AppEvent::RedisError(e) => self.redis_error = Some(e),
             AppEvent::AgentSpawned { agent_id, pid } => {
@@ -511,6 +604,33 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
                             }
                         }
                     }
+
+                    // Poll negotiation keys (offers/needs)
+                    let offers_key = format!("request:{}:offers", spec.id);
+                    let needs_key = format!("request:{}:needs", spec.id);
+                    let offers = redis::cmd("GET")
+                        .arg(&offers_key)
+                        .query_async::<Option<String>>(&mut con)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                    let needs = redis::cmd("GET")
+                        .arg(&needs_key)
+                        .query_async::<Option<String>>(&mut con)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                    if offers.is_some() || needs.is_some() {
+                        let _ = tx.send(AppEvent::NegotiationUpdate {
+                            agent_id: spec.id.clone(),
+                            offers,
+                            needs,
+                        });
+                    }
                 }
 
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -633,8 +753,92 @@ async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedS
                     }
                 }
             }
+
+            // Poll negotiation keys via CLI
+            let offers_key = format!("request:{}:offers", spec.id);
+            let needs_key = format!("request:{}:needs", spec.id);
+            if let Ok(out) = Command::new("redis-cli")
+                .args(["-u", url, "--tls", "MGET", &offers_key, &needs_key])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+            {
+                let values: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(|line| line.trim().to_string())
+                    .collect();
+                let decode_neg = |index: usize| {
+                    values
+                        .get(index)
+                        .map(|v| v.trim_matches('"').trim().to_string())
+                        .filter(|v| !v.is_empty() && v != "(nil)")
+                };
+                let offers = decode_neg(0);
+                let needs = decode_neg(1);
+                if offers.is_some() || needs.is_some() {
+                    let _ = tx.send(AppEvent::NegotiationUpdate {
+                        agent_id: spec.id.clone(),
+                        offers,
+                        needs,
+                    });
+                }
+            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn send_redis_message(redis_url: Option<&str>, to: &str, body: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(url) = redis_url else {
+        let _ = tx.send(AppEvent::RedisError("Cannot send message: SWARM_REDIS_URL not set".into()));
+        return;
+    };
+
+    let msg = format!("tui-operator|{body}");
+    let msg_key = format!("msg:{to}");
+
+    let result: Result<(), String> = if url.starts_with("rediss://") {
+        Command::new("redis-cli")
+            .args(["-u", url, "--tls", "LPUSH", &msg_key, &msg])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|out| {
+                if out.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+                }
+            })
+    } else {
+        match redis::Client::open(url) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(mut con) => redis::cmd("LPUSH")
+                    .arg(&msg_key)
+                    .arg(&msg)
+                    .query_async::<u64>(&mut con)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e.to_string()),
+        }
+    };
+
+    match result {
+        Ok(()) => {
+            let _ = tx.send(AppEvent::MessageSent {
+                to: to.to_string(),
+                body: body.to_string(),
+            });
+        }
+        Err(err) => {
+            let _ = tx.send(AppEvent::RedisError(format!("Failed to send message: {err}")));
+        }
     }
 }
 
@@ -934,10 +1138,10 @@ async fn clear_swarm_redis_state(
 }
 
 fn draw(f: &mut ratatui::Frame, app: &App) {
-    // Calculate the dynamic height for the task input box.
-    // Inner width = total width minus 2 for the block borders.
     let available_width = f.area().width.saturating_sub(2) as usize;
-    let task_input_height = if available_width == 0 {
+    let bottom_input_height = if app.composing {
+        3u16
+    } else if available_width == 0 {
         3
     } else {
         let display_text = if app.task_input.trim().is_empty() {
@@ -946,37 +1150,76 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             app.task_input.as_str()
         };
         let text_lines = (display_text.len() + available_width - 1) / available_width;
-        // min 3 (1 visible line + borders), max 10 (8 visible lines + borders)
         (text_lines as u16 + 2).clamp(3, 10)
     };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10),
+            Constraint::Length(12),
             Constraint::Min(10),
-            Constraint::Length(task_input_height),
+            Constraint::Length(bottom_input_height),
             Constraint::Length(3),
         ])
         .split(f.area());
 
     draw_status(f, app, chunks[0]);
-    draw_logs(f, app, chunks[1]);
-    draw_task_input(f, app, chunks[2]);
+    match app.active_tab {
+        ViewTab::Logs => draw_logs(f, app, chunks[1]),
+        ViewTab::Messages => draw_messages(f, app, chunks[1]),
+    }
+    if app.composing {
+        draw_compose_input(f, app, chunks[2]);
+    } else {
+        draw_task_input(f, app, chunks[2]);
+    }
     draw_help(f, app, chunks[3]);
 }
 
 fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+
+    // Tab bar
+    let tab_spans: Vec<Span> = vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            format!(" {} ", ViewTab::Logs.label()),
+            if app.active_tab == ViewTab::Logs {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled("  │  ", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled(
+            format!(" {} ({}) ", ViewTab::Messages.label(), app.messages.len()),
+            if app.active_tab == ViewTab::Messages {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled("    ", Style::default()),
+        Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" switch view", Style::default().fg(Color::DarkGray)),
+    ];
+    f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+        .split(rows[1]);
 
     render_agent_column(
         f,
         " Frontend Agents ",
         &app.ordered_agents(&app.frontend_order),
         AgentRole::Frontend.color(),
+        &app.agent_offers,
+        &app.agent_needs,
         cols[0],
     );
     render_agent_column(
@@ -984,6 +1227,8 @@ fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
         " Backend Agents ",
         &app.ordered_agents(&app.backend_order),
         AgentRole::Backend.color(),
+        &app.agent_offers,
+        &app.agent_needs,
         cols[1],
     );
 }
@@ -993,21 +1238,51 @@ fn render_agent_column(
     title: &str,
     agents: &[&AgentState],
     color: Color,
+    offers: &HashMap<String, String>,
+    needs: &HashMap<String, String>,
     area: Rect,
 ) {
-    let items: Vec<ListItem> = agents
-        .iter()
-        .map(|agent| {
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{} ", agent.spec.label),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(agent.status.as_str()),
-            ]);
-            ListItem::new(line)
-        })
-        .collect();
+    let mut items: Vec<ListItem> = Vec::new();
+    for agent in agents {
+        let mut spans = vec![
+            Span::styled(
+                format!("{} ", agent.spec.label),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(agent.status.as_str()),
+        ];
+        if let Some(task) = &agent.task {
+            spans.push(Span::styled(
+                format!("  📋 {}", truncate_str(task, 40)),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        items.push(ListItem::new(Line::from(spans)));
+
+        // Show offers/needs on a sub-line if available
+        let id = &agent.spec.id;
+        let has_offers = offers.get(id);
+        let has_needs = needs.get(id);
+        if has_offers.is_some() || has_needs.is_some() {
+            let mut sub_spans: Vec<Span> = vec![Span::raw("   ")];
+            if let Some(o) = has_offers {
+                sub_spans.push(Span::styled(
+                    format!("📤 {}", truncate_str(o, 35)),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+            if let Some(n) = has_needs {
+                if has_offers.is_some() {
+                    sub_spans.push(Span::raw("  "));
+                }
+                sub_spans.push(Span::styled(
+                    format!("📥 {}", truncate_str(n, 35)),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+            items.push(ListItem::new(Line::from(sub_spans)));
+        }
+    }
 
     let list = List::new(items).block(
         Block::default()
@@ -1016,6 +1291,15 @@ fn render_agent_column(
             .border_style(Style::default().fg(color)),
     );
     f.render_widget(list, area);
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{truncated}…")
+    }
 }
 
 fn draw_logs(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -1053,6 +1337,87 @@ fn render_log_pane(f: &mut ratatui::Frame, logs: &[String], title: &str, color: 
             .border_style(Style::default().fg(color)),
     );
     f.render_widget(list, area);
+}
+
+fn draw_messages(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let start = app.messages.len().saturating_sub(inner_height);
+
+    let items: Vec<ListItem> = app.messages[start..]
+        .iter()
+        .map(|msg| {
+            let direction_color = if msg.from == "tui-operator" {
+                Color::Green
+            } else {
+                Color::Cyan
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", msg.timestamp),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{} → {} ", msg.from, msg.to),
+                    Style::default().fg(direction_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(&msg.body, Style::default().fg(Color::White)),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let title = format!(" Messages ({}) ", app.messages.len());
+    let list = List::new(items).block(
+        Block::default()
+            .title(title.as_str())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+    f.render_widget(list, area);
+}
+
+fn draw_compose_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let target_label = app.compose_target.display_name();
+    let title = format!(" Send to {} (Ctrl+T switch target, Enter send, Esc cancel) ", target_label);
+    let display_text = if app.compose_input.is_empty() {
+        "Type your message..."
+    } else {
+        app.compose_input.as_str()
+    };
+    let is_placeholder = app.compose_input.is_empty();
+    let style = if is_placeholder {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let paragraph = Paragraph::new(display_text)
+        .style(style)
+        .block(
+            Block::default()
+                .title(title.as_str())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
+
+    if !is_placeholder {
+        let inner_width = area.width.saturating_sub(2) as usize;
+        let cursor_x = if inner_width > 0 {
+            (app.compose_cursor % inner_width) as u16
+        } else {
+            0
+        };
+        let cursor_y = if inner_width > 0 {
+            (app.compose_cursor / inner_width) as u16
+        } else {
+            0
+        };
+        f.set_cursor_position((area.x + 1 + cursor_x, area.y + 1 + cursor_y));
+    }
 }
 
 fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
@@ -1165,25 +1530,62 @@ fn draw_task_input(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let launch_msg = if !app.launched {
-        "[Enter] Launch"
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::DarkGray);
+    let sep_style = Style::default().fg(Color::Rgb(60, 60, 60));
+    let sep = Span::styled("  │  ", sep_style);
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+
+    if app.composing {
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Send", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Esc", key_style));
+        spans.push(Span::styled(" Cancel", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Ctrl+T", key_style));
+        spans.push(Span::styled(" Switch target", desc_style));
+    } else if !app.launched {
+        spans.push(Span::styled("Enter", key_style));
+        spans.push(Span::styled(" Launch swarm", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("q", key_style));
+        spans.push(Span::styled("/", desc_style));
+        spans.push(Span::styled("Esc", key_style));
+        spans.push(Span::styled(" Quit", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Tab", key_style));
+        spans.push(Span::styled(" Switch view", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Ctrl+M", key_style));
+        spans.push(Span::styled(" Send message", desc_style));
     } else {
-        "[Enter] Relaunch after exit"
-    };
+        spans.push(Span::styled("q", key_style));
+        spans.push(Span::styled("/", desc_style));
+        spans.push(Span::styled("Esc", key_style));
+        spans.push(Span::styled(" Quit", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Tab", key_style));
+        spans.push(Span::styled(" Switch view", desc_style));
+        spans.push(sep.clone());
+        spans.push(Span::styled("Ctrl+M", key_style));
+        spans.push(Span::styled(" Send message", desc_style));
+    }
 
-    let redis = app
-        .redis_error
-        .as_deref()
-        .map(|e| format!(" | redis: {e}"))
-        .unwrap_or_default();
-    let text = format!(
-        " {launch_msg} | [q] Quit | [Backspace] Edit | Logs & Redis reset each run{}",
-        redis
-    );
+    if let Some(err) = &app.redis_error {
+        spans.push(sep.clone());
+        spans.push(Span::styled(
+            format!("⚠ Redis: {err}"),
+            Style::default().fg(Color::Red),
+        ));
+    }
 
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::DarkGray))
-        .wrap(Wrap { trim: true });
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line).wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 }
 
@@ -1549,67 +1951,149 @@ async fn main() -> Result<()> {
         if event::poll(timeout)? {
             if let CEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
-                        KeyCode::Char(ch) if !app.launched => {
-                            app.task_input.insert(app.cursor_pos, ch);
-                            app.cursor_pos += ch.len_utf8();
-                        }
-                        KeyCode::Backspace if !app.launched && app.cursor_pos > 0 => {
-                            // Find the previous char boundary
-                            let prev = app.task_input[..app.cursor_pos]
-                                .char_indices()
-                                .next_back()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            app.task_input.remove(prev);
-                            app.cursor_pos = prev;
-                        }
-                        KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() => {
-                            app.task_input.remove(app.cursor_pos);
-                        }
-                        KeyCode::Left if !app.launched && app.cursor_pos > 0 => {
-                            // Move cursor back one char
-                            app.cursor_pos = app.task_input[..app.cursor_pos]
-                                .char_indices()
-                                .next_back()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                        }
-                        KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() => {
-                            // Move cursor forward one char
-                            let next = app.task_input[app.cursor_pos..]
-                                .char_indices()
-                                .nth(1)
-                                .map(|(i, _)| app.cursor_pos + i)
-                                .unwrap_or(app.task_input.len());
-                            app.cursor_pos = next;
-                        }
-                        KeyCode::Home if !app.launched => {
-                            app.cursor_pos = 0;
-                        }
-                        KeyCode::End if !app.launched => {
-                            app.cursor_pos = app.task_input.len();
-                        }
-                        KeyCode::Enter if !app.launched => {
-                            let launch_task = app.current_task_prompt();
-                            let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
-                            app.task_input.clear();
-                            app.reset_for_next_run();
-                            clear_swarm_redis_state(redis_url.as_deref(), &launch_specs, &tx).await;
-                            while let Ok(ev) = rx.try_recv() {
-                                app.handle_event(ev);
+                    if app.composing {
+                        // Compose mode key handling
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.composing = false;
+                                app.compose_input.clear();
+                                app.compose_cursor = 0;
                             }
-                            app.launched = true;
-                            for spec in launch_specs {
-                                let tx_agent = tx.clone();
-                                let path = junie_path.clone();
-                                let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-                                agent_controls.insert(spec.id.clone(), cmd_tx);
-                                tokio::spawn(async move { spawn_agent(spec, path, tx_agent, cmd_rx).await });
+                            KeyCode::Enter => {
+                                let body = app.compose_input.trim().to_string();
+                                if !body.is_empty() {
+                                    // Determine target agent IDs for the selected role
+                                    let target_ids: Vec<String> = match app.compose_target {
+                                        AgentRole::Frontend => app.frontend_order.clone(),
+                                        AgentRole::Backend => app.backend_order.clone(),
+                                    };
+                                    let tx_send = tx.clone();
+                                    let redis_url_send = redis_url.clone();
+                                    let body_send = body.clone();
+                                    tokio::spawn(async move {
+                                        for target_id in &target_ids {
+                                            send_redis_message(
+                                                redis_url_send.as_deref(),
+                                                target_id,
+                                                &body_send,
+                                                &tx_send,
+                                            ).await;
+                                        }
+                                    });
+                                }
+                                app.composing = false;
+                                app.compose_input.clear();
+                                app.compose_cursor = 0;
                             }
+                            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.compose_target = match app.compose_target {
+                                    AgentRole::Frontend => AgentRole::Backend,
+                                    AgentRole::Backend => AgentRole::Frontend,
+                                };
+                            }
+                            KeyCode::Char(ch) => {
+                                app.compose_input.insert(app.compose_cursor, ch);
+                                app.compose_cursor += ch.len_utf8();
+                            }
+                            KeyCode::Backspace if app.compose_cursor > 0 => {
+                                let prev = app.compose_input[..app.compose_cursor]
+                                    .char_indices()
+                                    .next_back()
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
+                                app.compose_input.remove(prev);
+                                app.compose_cursor = prev;
+                            }
+                            KeyCode::Left if app.compose_cursor > 0 => {
+                                app.compose_cursor = app.compose_input[..app.compose_cursor]
+                                    .char_indices()
+                                    .next_back()
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
+                            }
+                            KeyCode::Right if app.compose_cursor < app.compose_input.len() => {
+                                let next = app.compose_input[app.compose_cursor..]
+                                    .char_indices()
+                                    .nth(1)
+                                    .map(|(i, _)| app.compose_cursor + i)
+                                    .unwrap_or(app.compose_input.len());
+                                app.compose_cursor = next;
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                    } else {
+                        // Normal mode key handling
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
+                            KeyCode::Tab => {
+                                app.active_tab = match app.active_tab {
+                                    ViewTab::Logs => ViewTab::Messages,
+                                    ViewTab::Messages => ViewTab::Logs,
+                                };
+                            }
+                            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.composing = true;
+                                app.compose_input.clear();
+                                app.compose_cursor = 0;
+                                app.active_tab = ViewTab::Messages;
+                            }
+                            KeyCode::Char(ch) if !app.launched => {
+                                app.task_input.insert(app.cursor_pos, ch);
+                                app.cursor_pos += ch.len_utf8();
+                            }
+                            KeyCode::Backspace if !app.launched && app.cursor_pos > 0 => {
+                                let prev = app.task_input[..app.cursor_pos]
+                                    .char_indices()
+                                    .next_back()
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
+                                app.task_input.remove(prev);
+                                app.cursor_pos = prev;
+                            }
+                            KeyCode::Delete if !app.launched && app.cursor_pos < app.task_input.len() => {
+                                app.task_input.remove(app.cursor_pos);
+                            }
+                            KeyCode::Left if !app.launched && app.cursor_pos > 0 => {
+                                app.cursor_pos = app.task_input[..app.cursor_pos]
+                                    .char_indices()
+                                    .next_back()
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
+                            }
+                            KeyCode::Right if !app.launched && app.cursor_pos < app.task_input.len() => {
+                                let next = app.task_input[app.cursor_pos..]
+                                    .char_indices()
+                                    .nth(1)
+                                    .map(|(i, _)| app.cursor_pos + i)
+                                    .unwrap_or(app.task_input.len());
+                                app.cursor_pos = next;
+                            }
+                            KeyCode::Home if !app.launched => {
+                                app.cursor_pos = 0;
+                            }
+                            KeyCode::End if !app.launched => {
+                                app.cursor_pos = app.task_input.len();
+                            }
+                            KeyCode::Enter if !app.launched => {
+                                let launch_task = app.current_task_prompt();
+                                let launch_specs = build_agent_specs(&project_root, launch_task.as_deref())?;
+                                app.task_input.clear();
+                                app.reset_for_next_run();
+                                clear_swarm_redis_state(redis_url.as_deref(), &launch_specs, &tx).await;
+                                while let Ok(ev) = rx.try_recv() {
+                                    app.handle_event(ev);
+                                }
+                                app.launched = true;
+                                for spec in launch_specs {
+                                    let tx_agent = tx.clone();
+                                    let path = junie_path.clone();
+                                    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+                                    agent_controls.insert(spec.id.clone(), cmd_tx);
+                                    tokio::spawn(async move { spawn_agent(spec, path, tx_agent, cmd_rx).await });
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
