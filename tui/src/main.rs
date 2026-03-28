@@ -638,6 +638,35 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
                     }
                 }
 
+                // Poll role-level message queues (msg:frontend, msg:backend)
+                for role in [AgentRole::Frontend, AgentRole::Backend] {
+                    let role_msg_key = format!("msg:{}", role.as_str());
+                    if let Ok(messages) = redis::cmd("LRANGE")
+                        .arg(&role_msg_key)
+                        .arg(0i64)
+                        .arg(-1i64)
+                        .query_async::<Vec<String>>(&mut con)
+                        .await
+                    {
+                        if !messages.is_empty() {
+                            let _ = redis::cmd("DEL")
+                                .arg(&role_msg_key)
+                                .query_async::<u64>(&mut con)
+                                .await;
+                            for raw in messages {
+                                let (from, body) = raw.split_once('|')
+                                    .map(|(f, b)| (f.to_string(), b.to_string()))
+                                    .unwrap_or_else(|| ("unknown".into(), raw.clone()));
+                                let _ = tx.send(AppEvent::AgentMessage {
+                                    from,
+                                    to: role.as_str().to_string(),
+                                    body,
+                                });
+                            }
+                        }
+                    }
+                }
+
                 tokio::time::sleep(Duration::from_secs(1)).await;
             },
             Err(e) => {
@@ -795,6 +824,48 @@ async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedS
                 }
             }
         }
+
+        // Poll role-level message queues via CLI (msg:frontend, msg:backend)
+        for role in [AgentRole::Frontend, AgentRole::Backend] {
+            let role_msg_key = format!("msg:{}", role.as_str());
+            if let Ok(out) = Command::new("redis-cli")
+                .args(["-u", url, "--tls", "LRANGE", &role_msg_key, "0", "-1"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+            {
+                let raw_out = String::from_utf8_lossy(&out.stdout);
+                let messages: Vec<&str> = raw_out.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
+                    .filter(|l| !l.starts_with("(integer)"))
+                    .collect();
+                if !messages.is_empty() {
+                    let _ = Command::new("redis-cli")
+                        .args(["-u", url, "--tls", "DEL", &role_msg_key])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .output()
+                        .await;
+                    for raw in messages {
+                        let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
+                            .and_then(|s| s.strip_prefix(") "))
+                            .unwrap_or(raw)
+                            .trim_matches('"');
+                        let (from, body) = cleaned.split_once('|')
+                            .map(|(f, b)| (f.to_string(), b.to_string()))
+                            .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
+                        let _ = tx.send(AppEvent::AgentMessage {
+                            from,
+                            to: role.as_str().to_string(),
+                            body,
+                        });
+                    }
+                }
+            }
+        }
+
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
