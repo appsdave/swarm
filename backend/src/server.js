@@ -34,6 +34,11 @@ async function main() {
     console.log("  PUT  /api/negotiation/:agentId/needs");
     console.log("  PUT  /api/negotiation/:agentId/offers");
     console.log("  GET  /api/events  (SSE stream)");
+    console.log("  POST /api/runs");
+    console.log("  GET  /api/runs");
+    console.log("  GET  /api/runs/:id");
+    console.log("  POST /api/notifications");
+    console.log("  GET  /api/notifications");
   });
 
   // Graceful shutdown
