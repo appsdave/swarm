@@ -18,7 +18,7 @@ The current setup launches two agents from separate worktrees:
 | Agent A1 — Frontend | `frontend-1` | `worktree-frontend/` | `agent/frontend` | `prompts/agent-frontend.md` | Frontend implementation and frontend-facing workflow updates |
 | Agent B1 — Backend | `backend-1` | `worktree-backend/` | `agent/backend` | `prompts/agent-backend.md` | Backend implementation, API work, and schema publishing |
 
-`setup-worktrees.sh` creates the worktrees and branches. `launch-swarm.sh` starts the backend first so it can publish `schema:backend` as early as possible.
+`scripts/setup-worktrees.sh` creates the worktrees and branches. `scripts/launch-swarm.sh` starts the backend first so it can publish `schema:backend` as early as possible.
 
 ## Redis Blackboard Keys
 
@@ -80,15 +80,15 @@ redis-cli -u "$SWARM_REDIS_URL" SET agent:frontend-1:task "Frontend complete"
 export SWARM_REDIS_URL="<your-render-redis-url>"
 
 # 2. Create the agent worktrees
-./setup-worktrees.sh
+./scripts/setup-worktrees.sh
 
 # 3. Launch the swarm from the repo root
-./launch-swarm.sh
+./scripts/launch-swarm.sh
 ```
 
 ### What the setup script creates
 
-`./setup-worktrees.sh` prepares:
+`./scripts/setup-worktrees.sh` prepares:
 
 - `worktree-frontend/` on branch `agent/frontend`
 - `worktree-backend/` on branch `agent/backend`
