@@ -128,6 +128,7 @@ enum AppEvent {
         blocked: Option<String>,
     },
     SchemaPublished { key: String, present: bool },
+    AgentMessage { from: String, to: String, body: String },
     RedisError(String),
     AgentSpawned { agent_id: String, pid: u32 },
     AgentExited { agent_id: String, code: Option<i32> },
@@ -314,6 +315,11 @@ impl App {
                     self.push_system_log(format!("Redis key `{key}` was published"));
                 }
             }
+            AppEvent::AgentMessage { from, to, body } => {
+                let msg = format!("💬 [{from} → {to}] {body}");
+                self.push_agent_log(&to, msg.clone());
+                self.push_agent_log(&from, msg);
+            }
             AppEvent::RedisError(e) => self.redis_error = Some(e),
             AppEvent::AgentSpawned { agent_id, pid } => {
                 if let Some(agent) = self.agents.get_mut(&agent_id) {
@@ -472,6 +478,34 @@ async fn redis_poll_native(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedSe
                         task,
                         blocked,
                     });
+
+                    // Poll message queue for this agent
+                    let msg_key = format!("msg:{}", spec.id);
+                    if let Ok(messages) = redis::cmd("LRANGE")
+                        .arg(&msg_key)
+                        .arg(0i64)
+                        .arg(-1i64)
+                        .query_async::<Vec<String>>(&mut con)
+                        .await
+                    {
+                        if !messages.is_empty() {
+                            let _ = redis::cmd("DEL")
+                                .arg(&msg_key)
+                                .query_async::<u64>(&mut con)
+                                .await;
+                            for raw in messages {
+                                // Messages stored as "from_agent|body"
+                                let (from, body) = raw.split_once('|')
+                                    .map(|(f, b)| (f.to_string(), b.to_string()))
+                                    .unwrap_or_else(|| ("unknown".into(), raw.clone()));
+                                let _ = tx.send(AppEvent::AgentMessage {
+                                    from,
+                                    to: spec.id.clone(),
+                                    body,
+                                });
+                            }
+                        }
+                    }
                 }
 
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -553,6 +587,45 @@ async fn redis_poll_via_cli(url: &str, specs: &[AgentSpec], tx: mpsc::UnboundedS
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::RedisError(format!("redis-cli: {e}")));
+                }
+            }
+
+            // Poll message queue via CLI
+            let msg_key = format!("msg:{}", spec.id);
+            if let Ok(out) = Command::new("redis-cli")
+                .args(["-u", url, "--tls", "LRANGE", &msg_key, "0", "-1"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+            {
+                let raw_out = String::from_utf8_lossy(&out.stdout);
+                let messages: Vec<&str> = raw_out.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && *l != "(empty list or set)" && *l != "(nil)")
+                    .filter(|l| !l.starts_with("(integer)"))
+                    .collect();
+                if !messages.is_empty() {
+                    let _ = Command::new("redis-cli")
+                        .args(["-u", url, "--tls", "DEL", &msg_key])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .output()
+                        .await;
+                    for raw in messages {
+                        let cleaned = raw.strip_prefix(|c: char| c.is_ascii_digit())
+                            .and_then(|s| s.strip_prefix(") "))
+                            .unwrap_or(raw)
+                            .trim_matches('"');
+                        let (from, body) = cleaned.split_once('|')
+                            .map(|(f, b)| (f.to_string(), b.to_string()))
+                            .unwrap_or_else(|| ("unknown".into(), cleaned.to_string()));
+                        let _ = tx.send(AppEvent::AgentMessage {
+                            from,
+                            to: spec.id.clone(),
+                            body,
+                        });
+                    }
                 }
             }
         }
@@ -796,12 +869,18 @@ async fn clear_swarm_redis_state(
         "schema:frontend".to_string(),
         "schema:backend".to_string(),
         "project:status".to_string(),
+        "push:frontend".to_string(),
+        "push:backend".to_string(),
+        "msg:frontend".to_string(),
+        "msg:backend".to_string(),
     ];
     for spec in specs {
         keys.push(spec.status_key.clone());
         keys.push(format!("agent:{}:task", spec.id));
         keys.push(format!("agent:{}:last_poll", spec.id));
         keys.push(format!("blocked:{}", spec.id));
+        keys.push(format!("request:{}:offers", spec.id));
+        keys.push(format!("request:{}:needs", spec.id));
     }
 
     let result: Result<(), String> = if redis_url.starts_with("rediss://") {
@@ -1346,6 +1425,11 @@ fn render_prompt(
 ) -> String {
     let startup_task = role.startup_task();
     let completion_task = role.completion_task();
+    let other_agent = match role {
+        AgentRole::Frontend => "backend",
+        AgentRole::Backend => "frontend",
+    };
+
     let publish_note = match role {
         AgentRole::Frontend => format!(
             "When you complete a component or schema that others might need, publish it with:\n```\nSET {} \"<your JSON data>\"\n```",
@@ -1363,7 +1447,7 @@ fn render_prompt(
         .unwrap_or_default();
 
     format!(
-        "# {label} — {role_name}\n\nYou are **{label}**, a {role_name} developer in an autonomous swarm. You work inside `{worktree}`.\n\n## Your Identity\n- **Agent ID**: `{agent_id}`\n- **Role**: {role_summary}\n\n{task_section}## Redis Blackboard Protocol\n\nYou communicate through the shared Render Redis blackboard. Use the Render MCP tools or `redis-cli` to interact with it.\n\n### On Startup\n```\nSET agent:{agent_id}:status running\nSET agent:{agent_id}:task \"{startup_task}\"\n```\n\n### When You Need Data From Another Agent\n1. Set your status to blocked:\n```\nSET agent:{agent_id}:status blocked\nSET blocked:{agent_id} \"{depends_on}\"\nSET agent:{agent_id}:last_poll <current ISO-8601 timestamp>\n```\n2. Enter the polling loop:\n- Run `sleep 60`\n- After waking, query Redis: `GET {depends_on}`\n- If the key exists and has data, break out of the loop\n- If empty/nil, update `agent:{agent_id}:last_poll` and sleep again\n- Do **not** exit; keep your context alive\n3. On receiving the data:\n```\nSET agent:{agent_id}:status running\nDEL blocked:{agent_id}\n```\n\n### Publishing Your Work\n{publish_note}\n\n### On Completion\n```\nSET agent:{agent_id}:status done\nSET agent:{agent_id}:task \"{completion_task}\"\n```\n\n## Work Rules\n- Stay inside `{worktree}`\n- Never modify files outside your worktree\n- Commit frequently on your own branch/worktree\n- Poll every 60 seconds when blocked; do not poll faster\n- Keep the session alive until your task is finished\n- Improve the project's file structure when it helps: keep related code grouped by feature, avoid cluttering top-level folders, and place new files where another developer would expect to find them\n- Write clean, production-quality code\n",
+        "# {label} — {role_name}\n\nYou are **{label}**, a {role_name} developer in an autonomous swarm. You work inside `{worktree}`.\n\n## Your Identity\n- **Agent ID**: `{agent_id}`\n- **Role**: {role_summary}\n\n{task_section}## Redis Blackboard Protocol\n\nYou communicate through the shared Render Redis blackboard. Use the Render MCP tools or `redis-cli` to interact with it.\n\n### On Startup\n```\nSET agent:{agent_id}:status running\nSET agent:{agent_id}:task \"{startup_task}\"\n```\n\n### Direct Messaging\n\nYou can send messages to the other agent via Redis message queues. Messages are stored as lists and polled by the TUI.\n\n**To send a message to `{other_agent}`:**\n```\nLPUSH msg:{other_agent} \"{agent_id}|<your message text>\"\n```\n\n**To read messages sent to you:**\n```\nLRANGE msg:{agent_id} 0 -1\n```\nAfter reading, clear your inbox:\n```\nDEL msg:{agent_id}\n```\n\n**Use messages for:**\n- Asking questions: `LPUSH msg:{other_agent} \"{agent_id}|What format do you need for the API response?\"`\n- Sharing updates: `LPUSH msg:{other_agent} \"{agent_id}|I changed the auth endpoint to /api/v2/auth\"`\n- Coordinating work: `LPUSH msg:{other_agent} \"{agent_id}|Please hold off on the user model, I am refactoring it\"`\n- Answering questions: check `LRANGE msg:{agent_id} 0 -1` each poll cycle and respond via `LPUSH msg:{other_agent}`\n\n**Every poll cycle**, check your message inbox (`LRANGE msg:{agent_id} 0 -1`) and respond to any pending messages before continuing your work.\n\n### When You Need Data From Another Agent\n1. Set your status to blocked:\n```\nSET agent:{agent_id}:status blocked\nSET blocked:{agent_id} \"{depends_on}\"\nSET agent:{agent_id}:last_poll <current ISO-8601 timestamp>\n```\n2. Enter the polling loop:\n- Run `sleep 60`\n- After waking, query Redis: `GET {depends_on}`\n- Also check your message inbox: `LRANGE msg:{agent_id} 0 -1`\n- If the key exists and has data, break out of the loop\n- If empty/nil, update `agent:{agent_id}:last_poll` and sleep again\n- Do **not** exit; keep your context alive\n3. On receiving the data:\n```\nSET agent:{agent_id}:status running\nDEL blocked:{agent_id}\n```\n\n### Publishing Your Work\n{publish_note}\n\n### On Completion\n```\nSET agent:{agent_id}:status done\nSET agent:{agent_id}:task \"{completion_task}\"\n```\n\n## Work Rules\n- Stay inside `{worktree}`\n- Never modify files outside your worktree\n- Commit frequently on your own branch/worktree\n- Poll every 60 seconds when blocked; do not poll faster\n- Check your message inbox every poll cycle\n- Keep the session alive until your task is finished\n- Improve the project's file structure when it helps: keep related code grouped by feature, avoid cluttering top-level folders, and place new files where another developer would expect to find them\n- Write clean, production-quality code\n",
         role_name = role.display_name(),
         worktree = worktree.display(),
         role_summary = role.task_summary(),

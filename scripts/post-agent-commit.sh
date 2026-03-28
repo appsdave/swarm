@@ -1,25 +1,44 @@
 #!/usr/bin/env bash
 # post-agent-commit.sh — Runs after a Junie agent exits.
-# Commits, pushes, and opens a PR for the agent's worktree.
+# Commits, rebases on main + other agent's branch, pushes, and opens a PR.
+# Uses Redis to coordinate push ordering so PRs don't conflict with each other.
 #
 # Usage: post-agent-commit.sh <worktree-path> <branch-name> <agent-label>
 #
 # Requires: git, gh (GitHub CLI, authenticated)
+# Optional: SWARM_REDIS_URL for agent coordination
 
 set -euo pipefail
 
 WORKTREE="$1"
 BRANCH="$2"
 LABEL="$3"
+REDIS_URL="${SWARM_REDIS_URL:-}"
 
 cd "$WORKTREE"
 
-# Check if there are any changes to commit
+# ── Helper: run a Redis command ──────────────────────────────────────
+redis_cmd() {
+  [ -z "$REDIS_URL" ] && return 1
+  if [[ "$REDIS_URL" == rediss://* ]]; then
+    redis-cli -u "$REDIS_URL" --tls "$@" 2>/dev/null
+  else
+    redis-cli -u "$REDIS_URL" "$@" 2>/dev/null
+  fi
+}
+
+# ── Helper: announce push status in Redis ────────────────────────────
+set_push_status() {
+  redis_cmd SET "push:${LABEL}" "$1" EX 600 || true
+}
+
+# ── 1. Check for changes ────────────────────────────────────────────
 if git diff --quiet HEAD && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
   echo "[$LABEL] No changes to commit."
   exit 0
 fi
 
+# ── 2. Commit ────────────────────────────────────────────────────────
 echo "[$LABEL] Committing changes..."
 git add -A
 git commit -m "feat($LABEL): auto-commit agent work" \
@@ -27,33 +46,69 @@ git commit -m "feat($LABEL): auto-commit agent work" \
   echo "[$LABEL] Nothing to commit (maybe already committed)."
 }
 
-echo "[$LABEL] Pulling latest from origin/$BRANCH (rebase)..."
-git pull --rebase origin "$BRANCH" 2>&1 || {
-  echo "[$LABEL] Pull --rebase failed, attempting to continue..."
-  git rebase --abort 2>/dev/null || true
-  # If rebase fails, force-push as last resort
-  echo "[$LABEL] Force-pushing to origin/$BRANCH..."
-  git push --force-with-lease origin "$BRANCH" 2>&1 || {
-    echo "[$LABEL] Force-push also failed."
-    exit 1
-  }
-  echo "[$LABEL] Force-push succeeded."
-  # skip normal push below
-  PUSHED=1
-}
+# ── 3. Rebase on latest main so the PR is conflict-free ──────────────
+echo "[$LABEL] Fetching latest main..."
+git fetch origin main 2>&1
 
-if [ "${PUSHED:-}" != "1" ]; then
-  echo "[$LABEL] Pushing to origin/$BRANCH..."
-  git push origin "$BRANCH" 2>&1 || {
-    echo "[$LABEL] Normal push failed, trying force-with-lease..."
-    git push --force-with-lease origin "$BRANCH" 2>&1 || {
-      echo "[$LABEL] Push failed entirely."
-      exit 1
-    }
-  }
+echo "[$LABEL] Rebasing $BRANCH onto origin/main..."
+if ! git rebase origin/main 2>&1; then
+  echo "[$LABEL] Rebase on main had conflicts — aborting rebase, will try merge..."
+  git rebase --abort 2>/dev/null || true
+  if ! git merge origin/main --no-edit 2>&1; then
+    echo "[$LABEL] Merge with main also failed — auto-resolving conflicts (keeping ours)..."
+    git diff --name-only --diff-filter=U | while read -r f; do
+      git checkout --ours "$f" 2>/dev/null && git add "$f" 2>/dev/null || true
+    done
+    git commit --no-edit 2>/dev/null || true
+  fi
 fi
 
-# Create PR if one doesn't already exist for this branch
+# ── 4. Check if the other agent already pushed — incorporate their changes ──
+OTHER_LABEL=""
+if [ "$LABEL" = "frontend" ]; then
+  OTHER_LABEL="backend"
+elif [ "$LABEL" = "backend" ]; then
+  OTHER_LABEL="frontend"
+fi
+
+if [ -n "$OTHER_LABEL" ]; then
+  OTHER_STATUS=$(redis_cmd GET "push:${OTHER_LABEL}" || echo "")
+  if [ "$OTHER_STATUS" = "done" ]; then
+    OTHER_BRANCH="agent/${OTHER_LABEL}"
+    echo "[$LABEL] Other agent ($OTHER_LABEL) already pushed — incorporating $OTHER_BRANCH..."
+    git fetch origin "$OTHER_BRANCH" 2>&1 || true
+    if ! git rebase "origin/$OTHER_BRANCH" 2>&1; then
+      echo "[$LABEL] Rebase on $OTHER_BRANCH had conflicts — trying merge..."
+      git rebase --abort 2>/dev/null || true
+      if ! git merge "origin/$OTHER_BRANCH" --no-edit 2>&1; then
+        git diff --name-only --diff-filter=U | while read -r f; do
+          git checkout --ours "$f" 2>/dev/null && git add "$f" 2>/dev/null || true
+        done
+        git commit --no-edit 2>/dev/null || true
+      fi
+    fi
+  else
+    echo "[$LABEL] Other agent ($OTHER_LABEL) has not pushed yet — skipping cross-rebase."
+  fi
+fi
+
+# ── 5. Push ──────────────────────────────────────────────────────────
+set_push_status "pushing"
+
+echo "[$LABEL] Pushing to origin/$BRANCH..."
+if ! git push origin "$BRANCH" 2>&1; then
+  echo "[$LABEL] Normal push failed, trying force-with-lease..."
+  if ! git push --force-with-lease origin "$BRANCH" 2>&1; then
+    echo "[$LABEL] Push failed — branch may need force-push or manual fix."
+    set_push_status "failed"
+    exit 1
+  fi
+fi
+
+set_push_status "done"
+echo "[$LABEL] Push complete. Signaled 'done' in Redis."
+
+# ── 6. Create PR if one doesn't already exist ────────────────────────
 EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || true)
 if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   echo "[$LABEL] PR #$EXISTING_PR already open for $BRANCH — skipping PR creation."
