@@ -119,18 +119,71 @@ struct AgentState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewTab {
-    Logs,
+enum Tab {
+    Swarm,
     Messages,
+    History,
+    Notifications,
 }
 
-impl ViewTab {
+impl Tab {
     fn label(self) -> &'static str {
         match self {
-            Self::Logs => "Logs",
+            Self::Swarm => "Swarm",
             Self::Messages => "Messages",
+            Self::History => "History",
+            Self::Notifications => "Notifications",
         }
     }
+    fn next(self) -> Self {
+        match self {
+            Self::Swarm => Self::Messages,
+            Self::Messages => Self::History,
+            Self::History => Self::Notifications,
+            Self::Notifications => Self::Swarm,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BackendStatus {
+    connected: bool,
+    last_check: String,
+    redis_status: String,
+}
+
+impl Default for BackendStatus {
+    fn default() -> Self {
+        Self {
+            connected: false,
+            last_check: "never".into(),
+            redis_status: "unknown".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RunRecord {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    duration: String,
+    #[serde(default)]
+    timestamp: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct NotificationEntry {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    timestamp: String,
+    #[serde(default, rename = "type")]
+    ntype: String,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +216,12 @@ enum AppEvent {
     AgentSpawned { agent_id: String, pid: u32 },
     AgentExited { agent_id: String, code: Option<i32> },
     MessageSent { to: String, body: String },
+    BackendStatusUpdate {
+        connected: bool,
+        redis_status: String,
+        runs: Vec<RunRecord>,
+        notifications: Vec<NotificationEntry>,
+    },
 }
 
 #[derive(Debug)]
@@ -187,7 +246,12 @@ struct App {
     cursor_pos: usize,
     schema_state: HashMap<String, bool>,
     // Agent communication features
-    active_tab: ViewTab,
+    active_tab: Tab,
+    backend_status: BackendStatus,
+    run_history: Vec<RunRecord>,
+    notifications: Vec<NotificationEntry>,
+    history_scroll: usize,
+    notif_scroll: usize,
     messages: Vec<MessageEntry>,
     unread_messages: usize,
     last_broadcast_index: i64,
@@ -240,7 +304,12 @@ impl App {
             task_input: task_prompt.clone().unwrap_or_default(),
             cursor_pos: task_prompt.as_deref().unwrap_or_default().len(),
             schema_state: HashMap::new(),
-            active_tab: ViewTab::Logs,
+            active_tab: Tab::Swarm,
+            backend_status: BackendStatus::default(),
+            run_history: Vec::new(),
+            notifications: Vec::new(),
+            history_scroll: 0,
+            notif_scroll: 0,
             messages: Vec::new(),
             unread_messages: 0,
             last_broadcast_index: -1,
@@ -392,7 +461,7 @@ impl App {
                     let overflow = self.messages.len() - MAX_MESSAGES;
                     self.messages.drain(0..overflow);
                 }
-                if self.active_tab != ViewTab::Messages {
+                if self.active_tab != Tab::Messages {
                     self.unread_messages += 1;
                 }
                 let msg = format!("💬 [{from} → {to}] {body}");
@@ -411,7 +480,7 @@ impl App {
                     let overflow = self.messages.len() - MAX_MESSAGES;
                     self.messages.drain(0..overflow);
                 }
-                if self.active_tab != ViewTab::Messages {
+                if self.active_tab != Tab::Messages {
                     self.unread_messages += 1;
                 }
                 let msg = format!("📢 [{from} → all] {body}");
@@ -443,11 +512,24 @@ impl App {
                     let overflow = self.messages.len() - MAX_MESSAGES;
                     self.messages.drain(0..overflow);
                 }
-                if self.active_tab != ViewTab::Messages {
+                if self.active_tab != Tab::Messages {
                     self.unread_messages += 1;
                 }
                 let msg = format!("💬 [tui-operator → {to}] {body}");
                 self.push_system_log(msg);
+            }
+            AppEvent::BackendStatusUpdate { connected, redis_status, runs, notifications } => {
+                self.backend_status.connected = connected;
+                self.backend_status.last_check = chrono::Local::now().format("%H:%M:%S").to_string();
+                self.backend_status.redis_status = redis_status;
+                self.run_history = runs;
+                self.notifications = notifications;
+                if self.history_scroll >= self.run_history.len() && !self.run_history.is_empty() {
+                    self.history_scroll = self.run_history.len() - 1;
+                }
+                if self.notif_scroll >= self.notifications.len() && !self.notifications.is_empty() {
+                    self.notif_scroll = self.notifications.len() - 1;
+                }
             }
             AppEvent::RedisError(e) => self.redis_error = Some(e),
             AppEvent::AgentSpawned { agent_id, pid } => {
@@ -532,6 +614,55 @@ impl App {
 
     fn all_agents_exited(&self) -> bool {
         !self.agents.is_empty() && self.agents.values().all(|agent| agent.exit_code.is_some())
+    }
+}
+
+async fn backend_poller(tx: mpsc::UnboundedSender<AppEvent>) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap_or_default();
+    let base = std::env::var("SWARM_BACKEND_URL").unwrap_or_else(|_| "http://localhost:3001".into());
+
+    loop {
+        let mut connected = false;
+        let mut redis_status = "unknown".to_string();
+        let mut runs: Vec<RunRecord> = Vec::new();
+        let mut notifications: Vec<NotificationEntry> = Vec::new();
+
+        if let Ok(resp) = client.get(format!("{base}/api/health")).send().await {
+            if resp.status().is_success() {
+                connected = true;
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    redis_status = json.get("redis")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("ok")
+                        .to_string();
+                }
+            }
+        }
+
+        if connected {
+            if let Ok(resp) = client.get(format!("{base}/api/runs")).send().await {
+                if let Ok(r) = resp.json::<Vec<RunRecord>>().await {
+                    runs = r;
+                }
+            }
+            if let Ok(resp) = client.get(format!("{base}/api/notifications")).send().await {
+                if let Ok(n) = resp.json::<Vec<NotificationEntry>>().await {
+                    notifications = n;
+                }
+            }
+        }
+
+        let _ = tx.send(AppEvent::BackendStatusUpdate {
+            connected,
+            redis_status,
+            runs,
+            notifications,
+        });
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
@@ -1320,6 +1451,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(10),
             Constraint::Length(bottom_input_height),
             Constraint::Length(3),
@@ -1327,51 +1459,121 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .split(f.area());
 
     draw_tab_bar(f, app, rows[0]);
+    draw_backend_status_bar(f, app, rows[1]);
 
     match app.active_tab {
-        ViewTab::Logs => draw_agent_columns(f, app, rows[1]),
-        ViewTab::Messages => draw_messages(f, app, rows[1]),
+        Tab::Swarm => draw_agent_columns(f, app, rows[2]),
+        Tab::Messages => draw_messages(f, app, rows[2]),
+        Tab::History => draw_history_tab(f, app, rows[2]),
+        Tab::Notifications => draw_notifications_tab(f, app, rows[2]),
     }
 
     if app.composing {
-        draw_compose_input(f, app, rows[2]);
+        draw_compose_input(f, app, rows[3]);
     } else {
-        draw_task_input(f, app, rows[2]);
+        draw_task_input(f, app, rows[3]);
     }
-    draw_help(f, app, rows[3]);
+    draw_help(f, app, rows[4]);
 }
 
 fn draw_tab_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let messages_label = if app.unread_messages > 0 && app.active_tab != ViewTab::Messages {
-        format!(" {} ({}) 🔔{} ", ViewTab::Messages.label(), app.messages.len(), app.unread_messages)
-    } else {
-        format!(" {} ({}) ", ViewTab::Messages.label(), app.messages.len())
-    };
-    let messages_style = if app.active_tab == ViewTab::Messages {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else if app.unread_messages > 0 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let sep = Span::styled(" │ ", Style::default().fg(Color::Rgb(60, 60, 60)));
+    let tabs = [Tab::Swarm, Tab::Messages, Tab::History, Tab::Notifications];
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for (i, tab) in tabs.iter().enumerate() {
+        let label = if *tab == Tab::Messages && app.unread_messages > 0 && app.active_tab != Tab::Messages {
+            format!(" {} ({}) 🔔{} ", tab.label(), app.messages.len(), app.unread_messages)
+        } else if *tab == Tab::Messages {
+            format!(" {} ({}) ", tab.label(), app.messages.len())
+        } else {
+            format!(" {} ", tab.label())
+        };
+        let style = if app.active_tab == *tab {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if *tab == Tab::Messages && app.unread_messages > 0 {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(label, style));
+        if i < tabs.len() - 1 {
+            spans.push(sep.clone());
+        }
+    }
+    spans.push(Span::styled("    ", Style::default()));
+    spans.push(Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(" switch view", Style::default().fg(Color::DarkGray)));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
 
-    let tab_spans: Vec<Span> = vec![
-        Span::styled(" ", Style::default()),
+fn draw_backend_status_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let (icon, color) = if app.backend_status.connected {
+        ("🟢", Color::Green)
+    } else {
+        ("🔴", Color::Red)
+    };
+    let status_text = if app.backend_status.connected { "Connected" } else { "Disconnected" };
+    let line = Line::from(vec![
+        Span::raw(" Backend: "),
+        Span::styled(format!("{icon} {status_text}"), Style::default().fg(color)),
         Span::styled(
-            format!(" {} ", ViewTab::Logs.label()),
-            if app.active_tab == ViewTab::Logs {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            },
+            format!(" | Last check: {} | Redis: {}", app.backend_status.last_check, app.backend_status.redis_status),
+            Style::default().fg(Color::DarkGray),
         ),
-        Span::styled("  │  ", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled(messages_label, messages_style),
-        Span::styled("    ", Style::default()),
-        Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" switch view", Style::default().fg(Color::DarkGray)),
-    ];
-    f.render_widget(Paragraph::new(Line::from(tab_spans)), area);
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_history_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    if app.run_history.is_empty() {
+        let msg = Paragraph::new(" No run history yet. Runs will appear here after swarm tasks complete.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" History "));
+        f.render_widget(msg, area);
+        return;
+    }
+    let items: Vec<ListItem> = app.run_history.iter().enumerate().map(|(i, r)| {
+        let style = if i == app.history_scroll {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let icon = match r.status.as_str() {
+            "success" => "✅",
+            "failed" => "❌",
+            _ => "⏳",
+        };
+        ListItem::new(format!("{icon} [{}] {} — {} ({})", r.timestamp, r.task, r.status, r.duration)).style(style)
+    }).collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" History (↑/↓ scroll) "));
+    f.render_widget(list, area);
+}
+
+fn draw_notifications_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    if app.notifications.is_empty() {
+        let msg = Paragraph::new(" No notifications yet.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" Notifications "));
+        f.render_widget(msg, area);
+        return;
+    }
+    let items: Vec<ListItem> = app.notifications.iter().enumerate().map(|(i, n)| {
+        let style = if i == app.notif_scroll {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let icon = match n.ntype.as_str() {
+            "error" => "🔴",
+            "warning" => "⚠️",
+            _ => "ℹ️",
+        };
+        ListItem::new(format!("{icon} [{}] {}", n.timestamp, n.message)).style(style)
+    }).collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Notifications (↑/↓ scroll) "));
+    f.render_widget(list, area);
 }
 
 /// Draw agent status + logs in two vertical columns (frontend left, backend right).
@@ -2445,6 +2647,10 @@ async fn main() -> Result<()> {
     let redis_url_for_poller = redis_url.clone();
     tokio::spawn(async move { redis_poller(redis_url_for_poller, redis_specs, tx_redis).await });
 
+    // Backend status poller
+    let tx_backend = tx.clone();
+    tokio::spawn(async move { backend_poller(tx_backend).await });
+
     let tick_rate = Duration::from_millis(16);
     let mut last_tick = Instant::now();
     let mut agent_controls: HashMap<String, mpsc::UnboundedSender<AgentCommand>> = HashMap::new();
@@ -2541,19 +2747,28 @@ async fn main() -> Result<()> {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
                             KeyCode::Tab => {
-                                app.active_tab = match app.active_tab {
-                                    ViewTab::Logs => ViewTab::Messages,
-                                    ViewTab::Messages => ViewTab::Logs,
-                                };
-                                if app.active_tab == ViewTab::Messages {
+                                app.active_tab = app.active_tab.next();
+                                if app.active_tab == Tab::Messages {
                                     app.unread_messages = 0;
                                 }
+                            }
+                            KeyCode::Up if app.active_tab == Tab::History && app.history_scroll > 0 => {
+                                app.history_scroll -= 1;
+                            }
+                            KeyCode::Down if app.active_tab == Tab::History && app.history_scroll + 1 < app.run_history.len() => {
+                                app.history_scroll += 1;
+                            }
+                            KeyCode::Up if app.active_tab == Tab::Notifications && app.notif_scroll > 0 => {
+                                app.notif_scroll -= 1;
+                            }
+                            KeyCode::Down if app.active_tab == Tab::Notifications && app.notif_scroll + 1 < app.notifications.len() => {
+                                app.notif_scroll += 1;
                             }
                             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 app.composing = true;
                                 app.compose_input.clear();
                                 app.compose_cursor = 0;
-                                app.active_tab = ViewTab::Messages;
+                                app.active_tab = Tab::Messages;
                                 app.unread_messages = 0;
                             }
                             KeyCode::Char(ch) if !app.launched => {
