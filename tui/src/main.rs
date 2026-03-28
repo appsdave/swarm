@@ -613,6 +613,31 @@ async fn spawn_agent(
     send_log(format!(">>> Launching {} in {} ...", junie_path.display(), spec.worktree.display()));
     send_log(format!(">>> Prompt file: {}", spec.prompt_path.display()));
 
+    // Pull latest changes in the worktree before starting the agent
+    {
+        let branch = format!("agent/{}", spec.role.as_str());
+        send_log(format!("🔄 Pulling latest changes for {}...", branch));
+        match Command::new("git")
+            .args(["pull", "--rebase", "origin", &branch])
+            .current_dir(&spec.worktree)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+        {
+            Ok(out) => {
+                let msg = String::from_utf8_lossy(&out.stdout);
+                let err = String::from_utf8_lossy(&out.stderr);
+                if out.status.success() {
+                    send_log(format!("✅ Pull done: {}", msg.trim()));
+                } else {
+                    send_log(format!("⚠️ Pull failed (non-fatal): {} {}", msg.trim(), err.trim()));
+                }
+            }
+            Err(e) => send_log(format!("⚠️ git pull failed (non-fatal): {e}")),
+        }
+    }
+
     let prompt = match fs::read_to_string(&spec.prompt_path) {
         Ok(prompt) => prompt,
         Err(e) => {

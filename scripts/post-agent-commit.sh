@@ -27,11 +27,31 @@ git commit -m "feat($LABEL): auto-commit agent work" \
   echo "[$LABEL] Nothing to commit (maybe already committed)."
 }
 
-echo "[$LABEL] Pushing to origin/$BRANCH..."
-git push origin "$BRANCH" 2>&1 || {
-  echo "[$LABEL] Push failed — branch may need force-push or upstream is ahead."
-  exit 1
+echo "[$LABEL] Pulling latest from origin/$BRANCH (rebase)..."
+git pull --rebase origin "$BRANCH" 2>&1 || {
+  echo "[$LABEL] Pull --rebase failed, attempting to continue..."
+  git rebase --abort 2>/dev/null || true
+  # If rebase fails, force-push as last resort
+  echo "[$LABEL] Force-pushing to origin/$BRANCH..."
+  git push --force-with-lease origin "$BRANCH" 2>&1 || {
+    echo "[$LABEL] Force-push also failed."
+    exit 1
+  }
+  echo "[$LABEL] Force-push succeeded."
+  # skip normal push below
+  PUSHED=1
 }
+
+if [ "${PUSHED:-}" != "1" ]; then
+  echo "[$LABEL] Pushing to origin/$BRANCH..."
+  git push origin "$BRANCH" 2>&1 || {
+    echo "[$LABEL] Normal push failed, trying force-with-lease..."
+    git push --force-with-lease origin "$BRANCH" 2>&1 || {
+      echo "[$LABEL] Push failed entirely."
+      exit 1
+    }
+  }
+fi
 
 # Create PR if one doesn't already exist for this branch
 EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || true)
