@@ -77,6 +77,9 @@ if ! git rev-parse HEAD &>/dev/null; then
   git commit -m "initial commit" --allow-empty
 fi
 
+# Prune stale worktree registrations (handles "missing but already registered" errors)
+git worktree prune 2>/dev/null || true
+
 BASE_REF="$(git rev-parse --verify HEAD)"
 
 branch_ref_usable() {

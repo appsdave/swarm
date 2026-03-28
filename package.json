@@ -1,24 +1,14 @@
 {
-  "name": "ambition-backend",
+  "name": "ambition",
   "version": "1.0.0",
-  "description": "Ambition backend API — feature-based architecture",
-  "main": "src/app.js",
+  "private": true,
+  "type": "module",
+  "description": "Ambition — Swarm TUI for orchestrating AI coding agents",
   "scripts": {
-    "start": "node src/app.js",
-    "dev": "node --watch src/app.js",
-    "test": "node --test src/**/*.test.js",
-    "migrate": "node src/db/migrate.js"
-  },
-  "keywords": [],
-  "license": "MIT",
-  "dependencies": {
-    "better-sqlite3": "^11.7.0",
-    "cors": "^2.8.5",
-    "express": "^4.21.0",
-    "helmet": "^8.0.0",
-    "morgan": "^1.10.0",
-    "multer": "^2.1.1",
-    "uuid": "^11.1.0"
+    "build": "cd tui && cargo build --release",
+    "start": "cd tui && cargo run --release",
+    "dev": "cd tui && cargo run",
+    "launch": "bash launch-swarm.sh"
   },
   "engines": {
     "node": ">=20.0.0"
