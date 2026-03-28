@@ -796,6 +796,8 @@ async fn clear_swarm_redis_state(
         "schema:frontend".to_string(),
         "schema:backend".to_string(),
         "project:status".to_string(),
+        "push:frontend".to_string(),
+        "push:backend".to_string(),
     ];
     for spec in specs {
         keys.push(spec.status_key.clone());
