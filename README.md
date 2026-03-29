@@ -9,6 +9,36 @@ This project implements a self-polling, multi-agent swarm using:
 - **Render MCP & Terminal Tools** — Protocols for agents to read/write the blackboard
 - **Git Worktrees** — Isolated branches/folders so agents never overwrite each other
 
+## Project Structure
+
+```
+ambition/
+├── README.md                  # This file
+├── package.json               # Root package — build/start scripts delegate to tui/
+├── tui/                       # Rust TUI application (ratatui + tokio + redis)
+│   ├── Cargo.toml
+│   └── src/main.rs            # Single-file TUI: agent orchestration, Redis polling, UI
+├── backend/                   # Node.js REST + SSE API wrapping the Redis blackboard
+│   ├── src/
+│   │   ├── server.js          # Entry point — connects Redis, starts HTTP listener
+│   │   ├── app.js             # Express app factory (routes, middleware)
+│   │   ├── routes/            # Route handlers (agents, messages, schemas, negotiation, events)
+│   │   └── services/          # Business logic (redis.js, agentComm.js)
+│   ├── tests/api.test.js      # Integration tests (node:test runner)
+│   └── README.md              # Backend-specific documentation
+├── prompts/                   # Agent prompt templates
+│   ├── agent-frontend.md      # System prompt for the frontend agent
+│   └── agent-backend.md       # System prompt for the backend agent
+├── scripts/
+│   └── post-agent-commit.sh   # Post-completion: commit, rebase, push, open PR
+├── bootstrap-swarm.sh         # One-liner remote installer (clone + install)
+├── install-swarm.sh           # Build TUI, install binaries to ~/.swarm
+├── setup-worktrees.sh         # Create Git worktrees for frontend/backend agents
+├── launch-swarm.sh            # Shell-based launcher (alternative to TUI)
+├── worktree-frontend/         # Git worktree for frontend agent (branch: agent/frontend)
+└── worktree-backend/          # Git worktree for backend agent (branch: agent/backend)
+```
+
 ## Redis Key Conventions
 
 | Key Pattern | Type | Description |
@@ -188,7 +218,7 @@ The new default install location is `~/.swarm`, so the toolchain is self-contain
 If you want a one-liner install from GitHub, use:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap-swarm.sh | bash -s -- https://github.com/<owner>/<repo>.git
+curl -fsSL https://raw.githubusercontent.com/appsdave/swarm/main/bootstrap-swarm.sh | bash -s -- https://github.com/appsdave/swarm.git
 ```
 
 That bootstrap command clones or updates the source into `~/.swarm/src/ambition`, installs the runtime into `~/.swarm`, makes sure `~/.swarm/bin` is added to `~/.bashrc` and `~/.zshrc`, and wires those shells to auto-load `~/.swarm/env`.
@@ -345,11 +375,76 @@ You now have `3` ways to confirm this:
 - The shell launcher also clears stale Redis keys first, then monitors Redis and kills lingering agent PIDs once both `agent:frontend:status` and `agent:backend:status` are `done`.
 - This prevents finished Junie processes from sitting around and wasting RAM.
 
+## CLI Reference
+
+The `swarm` command is the primary interface. All subcommands auto-load the
+Redis URL from `~/.swarm/env` so you don't need to export it every time.
+
+| Command | Description |
+|---|---|
+| `swarm` | Launch the interactive TUI (default, same as `swarm tui`) |
+| `swarm tui` | Launch the interactive TUI explicitly |
+| `swarm run <task>` | Launch the TUI with a pre-filled task prompt |
+| `swarm shell` | Launch the shell-based swarm runner (no TUI) |
+| `swarm setup` | Create Git worktrees (`worktree-frontend/`, `worktree-backend/`) in the current project |
+| `swarm setup --redis-url <url>` | Create worktrees and persist the Redis URL to `~/.swarm/env` |
+| `swarm update` / `swarm -u` | Pull latest source and re-install (self-update) |
+| `swarm help` / `swarm --help` | Show help message |
+
+## TUI Keyboard Shortcuts
+
+The TUI has four tabs: **Swarm** (agent logs + status), **Messages** (inter-agent messages), **History** (past runs), and **Notifications**.
+
+| Key | Context | Action |
+|---|---|---|
+| `Tab` | Any | Cycle through tabs |
+| `q` / `Esc` | Normal | Quit the TUI |
+| `Up` / `Down` | History / Notifications | Scroll through entries |
+| Type text + `Enter` | Task input (before launch) | Enter a task and launch the swarm |
+| `Ctrl+M` | Normal | Open the message composer |
+| `Ctrl+T` | Compose mode | Toggle message target (Frontend ↔ Backend) |
+| `Enter` | Compose mode | Send the message |
+| `Esc` | Compose mode | Cancel composing |
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `SWARM_REDIS_URL` | `redis://localhost:6379` | Redis/Valkey connection URL. Use `rediss://` for TLS (Render). |
+| `SWARM_PROJECT_ROOT` | Current working directory | Override the project root the TUI/launcher operates on |
+| `SWARM_HOME` | `~/.swarm` | Installation directory for swarm binaries and config |
+| `SWARM_INSTALL_HOME` | Auto-detected | Base directory for installed share files (prompts, scripts) |
+| `SWARM_TASK_PROMPT` | — | Pre-fill the TUI task input via env var instead of CLI arg |
+| `SWARM_TOTAL_AGENTS` | Number of available worktrees | Cap the total number of agents the TUI will launch |
+| `SWARM_FRONTEND_SHARE` | `0.8` | Fraction (0.0–1.0) of agents assigned to the frontend role |
+| `SWARM_BACKEND_URL` | `http://localhost:3001` | URL of the backend API service (used by TUI for history/notifications) |
+| `JUNIE_BIN` | Auto-detected from `PATH` | Override the path to the `junie` binary |
+| `PORT` | `3001` | HTTP listen port for the backend API service |
+
+## Multi-Agent Scaling
+
+The TUI supports running **multiple agents per role**. To scale up:
+
+1. Create additional worktrees with a numeric suffix:
+   ```bash
+   git worktree add worktree-frontend-2 agent/frontend
+   git worktree add worktree-frontend-3 agent/frontend
+   git worktree add worktree-backend-2 agent/backend
+   ```
+2. The TUI auto-discovers directories matching `worktree-frontend*` and `worktree-backend*`.
+3. By default, 80% of agents are assigned to frontend (controlled by `SWARM_FRONTEND_SHARE`).
+4. Cap the total with `SWARM_TOTAL_AGENTS` — e.g., `SWARM_TOTAL_AGENTS=3 swarm`.
+5. At least one agent per role is always guaranteed (when worktrees exist for both roles).
+6. Each agent gets a unique ID (`frontend-1`, `frontend-2`, `backend-1`, etc.) and its own runtime prompt generated in `.swarm/runtime-prompts/`.
+
 ### Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | `SWARM_REDIS_URL is not set` | Run `swarm setup --redis-url "rediss://<your External Key Value URL>"`, or export it manually |
 | `Could not connect to Redis` | Check the URL is the **External** one, not Internal |
-| TLS errors | Render free-tier Redis uses `rediss://` (TLS). Make sure your client supports it |
+| TLS errors | Render uses `rediss://` (TLS). Make sure your client supports it |
 | Worktree already exists | Delete with `git worktree remove worktree-frontend` then re-run setup |
+| `Could not find junie` | Install Junie CLI and add to `PATH`, or set `JUNIE_BIN=/path/to/junie` |
+| TUI shows no agents | Ensure worktrees exist (`swarm setup`) or create them manually |
+| Agents not communicating | Check Redis keys: `redis-cli -u "$SWARM_REDIS_URL" MGET agent:frontend-1:status agent:backend-1:status` |
